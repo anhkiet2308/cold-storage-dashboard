@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 import { supabase } from './supabaseClient';
 import Login from './components/Login';
-import { exportToPDF, exportToExcel, sendEmailNotification, sendSMSNotification } from './utils/exportUtils';
+import { exportToPDF, exportToExcel } from './utils/exportUtils';
 
 // Icons
 const ThermostatIcon = () => (
@@ -46,6 +46,12 @@ const DownloadIcon = () => (
   </svg>
 );
 
+const LoginIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+  </svg>
+);
+
 const LogoutIcon = () => (
   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -57,6 +63,7 @@ const App = () => {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showLogin, setShowLogin] = useState(false);
 
   // Dashboard state
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -120,7 +127,10 @@ const App = () => {
         .eq('id', userId)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.log('Profile not found, creating default user profile');
+        return;
+      }
       setUserProfile(data);
     } catch (error) {
       console.error('Error fetching profile:', error);
@@ -138,6 +148,7 @@ const App = () => {
       if (error) throw error;
       setSensors(data || []);
       setLastUpdate(new Date());
+      
     } catch (error) {
       console.error('Error fetching sensors:', error);
     }
@@ -156,7 +167,7 @@ const App = () => {
       const transformedData = data ? data.map(alert => ({
         ...alert,
         time: new Date(alert.created_at).toLocaleString('vi-VN'),
-        sensor: `Sensor ${alert.sensor_id}`
+        sensor: sensors.find(s => s.id === alert.sensor_id)?.name || `Sensor ${alert.sensor_id}`
       })) : [];
       
       setAlertHistory(transformedData);
@@ -186,17 +197,26 @@ const App = () => {
 
       if (error) throw error;
       
-      // Transform for chart
+      // Group by hour for chart
       const chartPoints = {};
       data?.forEach(log => {
-        const time = new Date(log.logged_at).getHours() + ':00';
-        if (!chartPoints[time]) {
-          chartPoints[time] = { time };
+        const date = new Date(log.logged_at);
+        const hourKey = `${date.getHours()}:00`;
+        
+        if (!chartPoints[hourKey]) {
+          chartPoints[hourKey] = { time: hourKey };
         }
-        chartPoints[time][`sensor${log.sensor_id}`] = log.temperature;
+        chartPoints[hourKey][`sensor${log.sensor_id}`] = log.temperature;
       });
       
-      setChartData(Object.values(chartPoints));
+      // Convert to array and sort
+      const chartArray = Object.values(chartPoints).sort((a, b) => {
+        const hourA = parseInt(a.time.split(':')[0]);
+        const hourB = parseInt(b.time.split(':')[0]);
+        return hourA - hourB;
+      });
+      
+      setChartData(chartArray);
       setTemperatureLogs(data || []);
     } catch (error) {
       console.error('Error fetching temperature logs:', error);
@@ -208,9 +228,13 @@ const App = () => {
       const { data, error } = await supabase
         .from('settings')
         .select('*')
+        .limit(1)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.log('Settings not found, using defaults');
+        return;
+      }
       if (data) {
         setSettings(data);
       }
@@ -219,9 +243,66 @@ const App = () => {
     }
   };
 
+  // Update sensor temperature and check thresholds
+  const updateSensorTemperature = async () => {
+    if (!user) return; // Only update if logged in
+    
+    for (const sensor of sensors) {
+      const variation = (Math.random() - 0.5) * 0.5;
+      const newTemp = Number((sensor.temperature + variation).toFixed(1));
+      
+      try {
+        // Update sensor temperature
+        const { error: updateError } = await supabase
+          .from('sensors')
+          .update({ 
+            temperature: newTemp,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', sensor.id);
+        
+        if (updateError) throw updateError;
+        
+        // Log temperature
+        const { error: logError } = await supabase
+          .from('temperature_logs')
+          .insert([{ 
+            sensor_id: sensor.id, 
+            temperature: newTemp 
+          }]);
+          
+        if (logError) throw logError;
+        
+        // Check thresholds and create alert
+        if (newTemp > sensor.max_threshold || newTemp < sensor.min_threshold) {
+          const { error: alertError } = await supabase
+            .from('alerts')
+            .insert([{
+              sensor_id: sensor.id,
+              type: newTemp > sensor.max_threshold ? 'high' : 'low',
+              temperature: newTemp,
+              status: 'unresolved'
+            }]);
+            
+          if (alertError) throw alertError;
+          
+          // Show browser notification
+          if ('Notification' in window && Notification.permission === 'granted') {
+            new Notification('Cảnh báo nhiệt độ!', {
+              body: `${sensor.name}: ${newTemp}°C - ${newTemp > sensor.max_threshold ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}`,
+              icon: '/favicon.ico'
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error updating sensor:', error);
+      }
+    }
+  };
+
   // Update functions
   const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
-    if (userProfile?.role !== 'admin') {
+    if (!user || userProfile?.role !== 'admin') {
       alert('Chỉ admin mới có quyền thay đổi cài đặt!');
       return;
     }
@@ -232,7 +313,7 @@ const App = () => {
         .update({ 
           min_threshold: minThreshold,
           max_threshold: maxThreshold,
-          updated_by: user.id
+          updated_at: new Date().toISOString()
         })
         .eq('id', sensorId);
 
@@ -246,7 +327,7 @@ const App = () => {
   };
 
   const updateSettings = async () => {
-    if (userProfile?.role !== 'admin') {
+    if (!user || userProfile?.role !== 'admin') {
       alert('Chỉ admin mới có quyền thay đổi cài đặt!');
       return;
     }
@@ -256,7 +337,6 @@ const App = () => {
         .from('settings')
         .update({
           ...settings,
-          updated_by: user.id,
           updated_at: new Date().toISOString()
         })
         .eq('id', 1);
@@ -271,7 +351,7 @@ const App = () => {
   };
 
   const resolveAlert = async (alertId) => {
-    if (userProfile?.role !== 'admin') {
+    if (!user || userProfile?.role !== 'admin') {
       alert('Chỉ admin mới có quyền xử lý cảnh báo!');
       return;
     }
@@ -293,6 +373,10 @@ const App = () => {
     }
   };
 
+  const handleLogin = () => {
+    setShowLogin(true);
+  };
+
   const handleLogout = async () => {
     try {
       await supabase.auth.signOut();
@@ -303,66 +387,76 @@ const App = () => {
     }
   };
 
-  // Initialize data when user logs in
+  // Initialize data and subscriptions
   useEffect(() => {
-    if (user) {
-      fetchSensors();
-      fetchAlerts();
-      fetchSettings();
-      fetchTemperatureLogs();
+    // Always fetch data, even for anonymous users
+    fetchSensors();
+    fetchAlerts();
+    fetchSettings();
+    fetchTemperatureLogs();
 
-      // Subscribe to realtime changes
-      const sensorsSubscription = supabase
-        .channel('sensors-channel')
-        .on('postgres_changes', 
-          { event: '*', schema: 'public', table: 'sensors' },
-          () => fetchSensors()
-        )
-        .subscribe();
+    // Request notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
 
-      const alertsSubscription = supabase
-        .channel('alerts-channel')
-        .on('postgres_changes',
-          { event: '*', schema: 'public', table: 'alerts' },
-          async (payload) => {
-            if (payload.eventType === 'INSERT' && settings.email_notifications) {
-              // Send notifications
-              const alert = payload.new;
-              if (settings.email_notifications) {
-                await sendEmailNotification(supabase, alert, settings.notification_emails);
-              }
-              if (settings.sms_notifications) {
-                await sendSMSNotification(supabase, alert, settings.notification_phones);
-              }
-            }
-            fetchAlerts();
-          }
-        )
-        .subscribe();
-
-      // Temperature logging interval
-      const loggingInterval = setInterval(async () => {
-        for (const sensor of sensors) {
-          await supabase
-            .from('temperature_logs')
-            .insert([{ sensor_id: sensor.id, temperature: sensor.temperature }]);
+    // Subscribe to realtime changes
+    const sensorsChannel = supabase
+      .channel('public:sensors')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'sensors' },
+        () => {
+          fetchSensors();
         }
-      }, 60000); // Log every minute
+      )
+      .subscribe();
 
-      return () => {
-        sensorsSubscription.unsubscribe();
-        alertsSubscription.unsubscribe();
-        clearInterval(loggingInterval);
-      };
+    const alertsChannel = supabase
+      .channel('public:alerts')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'alerts' },
+        () => {
+          fetchAlerts();
+        }
+      )
+      .subscribe();
+
+    const logsChannel = supabase
+      .channel('public:temperature_logs')
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'temperature_logs' },
+        () => {
+          fetchTemperatureLogs();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      sensorsChannel.unsubscribe();
+      alertsChannel.unsubscribe();
+      logsChannel.unsubscribe();
+    };
+  }, []);
+
+  // Temperature update interval - only when user is logged in
+  useEffect(() => {
+    if (user && sensors.length > 0) {
+      // Initial update
+      updateSensorTemperature();
+      
+      // Update every 30 seconds
+      const interval = setInterval(() => {
+        updateSensorTemperature();
+      }, 30000);
+
+      return () => clearInterval(interval);
     }
   }, [user, sensors.length]);
 
   // Fetch temperature logs when timeRange changes
   useEffect(() => {
-    if (user) {
-      fetchTemperatureLogs();
-    }
-  }, [timeRange, user]);
+    fetchTemperatureLogs();
+  }, [timeRange]);
 
   const handleRefresh = () => {
     setIsLoading(true);
@@ -371,7 +465,7 @@ const App = () => {
       fetchAlerts(),
       fetchTemperatureLogs()
     ]).then(() => {
-      setIsLoading(false);
+      setTimeout(() => setIsLoading(false), 500);
     });
   };
 
@@ -405,12 +499,15 @@ const App = () => {
     );
   }
 
-  // Show login screen if not authenticated
-  if (!user) {
-    return <Login onLogin={setUser} />;
+  // Show login screen if requested
+  if (showLogin && !user) {
+    return <Login onLogin={(user) => {
+      setUser(user);
+      setShowLogin(false);
+    }} />;
   }
 
-  // Main dashboard
+  // Main dashboard - accessible to everyone
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="p-6 max-w-7xl mx-auto">
@@ -420,8 +517,10 @@ const App = () => {
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Hệ thống giám sát nhiệt độ kho lạnh</h1>
               <p className="text-sm text-gray-500 mt-1">
-                Cập nhật lần cuối: {lastUpdate.toLocaleString('vi-VN')} | 
-                Xin chào, {userProfile?.email} ({userProfile?.role === 'admin' ? 'Quản trị viên' : 'Người dùng'})
+                Cập nhật lần cuối: {lastUpdate.toLocaleString('vi-VN')}
+                {user && (
+                  <span> | Xin chào, {userProfile?.email || user.email} ({userProfile?.role === 'admin' ? 'Quản trị viên' : 'Người dùng'})</span>
+                )}
               </p>
             </div>
             <div className="flex gap-2">
@@ -429,19 +528,21 @@ const App = () => {
                 onClick={handleRefresh}
                 disabled={isLoading}
                 className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
+                title="Làm mới"
               >
                 <RefreshIcon />
               </button>
-              {userProfile?.role === 'admin' && (
+              {user && userProfile?.role === 'admin' && (
                 <button
                   onClick={() => setSettingsOpen(true)}
                   className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
+                  title="Cài đặt"
                 >
                   <SettingsIcon />
                 </button>
               )}
               <div className="relative">
-                <button className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50">
+                <button className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50" title="Thông báo">
                   <BellIcon />
                 </button>
                 {alertHistory.filter(a => a.status === 'unresolved').length > 0 && (
@@ -450,13 +551,23 @@ const App = () => {
                   </span>
                 )}
               </div>
-              <button
-                onClick={handleLogout}
-                className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
-                title="Đăng xuất"
-              >
-                <LogoutIcon />
-              </button>
+              {user ? (
+                <button
+                  onClick={handleLogout}
+                  className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
+                  title="Đăng xuất"
+                >
+                  <LogoutIcon />
+                </button>
+              ) : (
+                <button
+                  onClick={handleLogin}
+                  className="p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+                  title="Đăng nhập"
+                >
+                  <LoginIcon />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -466,6 +577,15 @@ const App = () => {
             <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
               <div className="h-full bg-blue-600 rounded-full animate-pulse" style={{ width: '60%' }}></div>
             </div>
+          </div>
+        )}
+
+        {/* Alert for anonymous users */}
+        {!user && (
+          <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <p className="text-sm text-blue-800">
+              Bạn đang xem ở chế độ khách. <button onClick={handleLogin} className="font-medium underline">Đăng nhập</button> để có thể cập nhật dữ liệu và truy cập đầy đủ tính năng.
+            </p>
           </div>
         )}
 
@@ -559,33 +679,40 @@ const App = () => {
                 </div>
 
                 <div className="h-96">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="time" />
-                      <YAxis domain={[-35, -10]} />
-                      <Tooltip />
-                      <Legend />
-                      <ReferenceLine y={-15} stroke="red" strokeDasharray="5 5" label="Ngưỡng cao" />
-                      <ReferenceLine y={-30} stroke="blue" strokeDasharray="5 5" label="Ngưỡng thấp" />
-                      {sensors.map((sensor, index) => {
-                        if (selectedSensor === 'all' || selectedSensor == sensor.id) {
-                          const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
-                          return (
-                            <Line 
-                              key={sensor.id}
-                              type="monotone" 
-                              dataKey={`sensor${sensor.id}`} 
-                              stroke={colors[index % colors.length]} 
-                              name={sensor.name} 
-                              strokeWidth={2} 
-                            />
-                          );
-                        }
-                        return null;
-                      })}
-                    </LineChart>
-                  </ResponsiveContainer>
+                  {chartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="time" />
+                        <YAxis domain={[-35, -10]} />
+                        <Tooltip />
+                        <Legend />
+                        <ReferenceLine y={-15} stroke="red" strokeDasharray="5 5" label="Ngưỡng cao" />
+                        <ReferenceLine y={-30} stroke="blue" strokeDasharray="5 5" label="Ngưỡng thấp" />
+                        {sensors.map((sensor, index) => {
+                          if (selectedSensor === 'all' || selectedSensor == sensor.id) {
+                            const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
+                            return (
+                              <Line 
+                                key={sensor.id}
+                                type="monotone" 
+                                dataKey={`sensor${sensor.id}`} 
+                                stroke={colors[index % colors.length]} 
+                                name={sensor.name} 
+                                strokeWidth={2}
+                                connectNulls
+                              />
+                            );
+                          }
+                          return null;
+                        })}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-gray-500">
+                      Không có dữ liệu trong khoảng thời gian này
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -612,7 +739,7 @@ const App = () => {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Trạng thái
                         </th>
-                        {userProfile?.role === 'admin' && (
+                        {user && userProfile?.role === 'admin' && (
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                             Hành động
                           </th>
@@ -620,48 +747,56 @@ const App = () => {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {alertHistory.map((alert) => (
-                        <tr key={alert.id}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.time}
+                      {alertHistory.length === 0 ? (
+                        <tr>
+                          <td colSpan={user && userProfile?.role === 'admin' ? 6 : 5} className="px-6 py-4 text-center text-gray-500">
+                            Không có cảnh báo
                           </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.sensor}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              alert.type === 'high'
-                                ? 'bg-red-100 text-red-800'
-                                : 'bg-blue-100 text-blue-800'
-                            }`}>
-                              {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              alert.status === 'resolved'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
-                            </span>
-                          </td>
-                          {userProfile?.role === 'admin' && (
-                            <td className="px-6 py-4 whitespace-nowrap text-sm">
-                              <button
-                                onClick={() => resolveAlert(alert.id)}
-                                disabled={alert.status === 'resolved'}
-                                className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
-                              >
-                                Xác nhận
-                              </button>
-                            </td>
-                          )}
                         </tr>
-                      ))}
+                      ) : (
+                        alertHistory.map((alert) => (
+                          <tr key={alert.id}>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.time}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.sensor}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                alert.type === 'high'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}>
+                                {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                alert.status === 'resolved'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
+                              </span>
+                            </td>
+                            {user && userProfile?.role === 'admin' && (
+                              <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                <button
+                                  onClick={() => resolveAlert(alert.id)}
+                                  disabled={alert.status === 'resolved'}
+                                  className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                >
+                                  Xác nhận
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -684,14 +819,14 @@ const App = () => {
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-sm text-gray-600">Số lần vượt ngưỡng (7 ngày)</dt>
+                      <dt className="text-sm text-gray-600">Số lần vượt ngưỡng</dt>
                       <dd className="text-sm font-medium text-gray-900">{alertHistory.length} lần</dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Nhiệt độ trung bình</dt>
                       <dd className="text-sm font-medium text-gray-900">
                         {sensors.length > 0 
-                          ? (sensors.reduce((sum, s) => sum + s.temperature, 0) / sensors.length).toFixed(1)
+                          ? (sensors.reduce((sum, s) => sum + (s.temperature || 0), 0) / sensors.length).toFixed(1)
                           : '--'
                         }°C
                       </dd>
@@ -722,6 +857,11 @@ const App = () => {
                       <DownloadIcon />
                       Xuất báo cáo nhiệt độ (Excel)
                     </button>
+                    {!user && (
+                      <p className="text-xs text-gray-500 text-center">
+                        Đăng nhập để xuất báo cáo đầy đủ
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -730,7 +870,7 @@ const App = () => {
         </div>
 
         {/* Settings Modal - Only for Admin */}
-        {settingsOpen && userProfile?.role === 'admin' && (
+        {settingsOpen && user && userProfile?.role === 'admin' && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
             <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
               <div className="p-6 border-b border-gray-200">

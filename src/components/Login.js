@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { supabase } from '../supabaseClient';
 
+// Thêm biểu tượng đóng
+const CloseIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+  </svg>
+);
+
 const Login = ({ onLogin }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -15,27 +22,20 @@ const Login = ({ onLogin }) => {
 
     try {
       if (isSignUp) {
-        // Sign up
         const { data, error } = await supabase.auth.signUp({
           email,
           password,
           options: {
-            data: {
-              full_name: email.split('@')[0], // Default name from email
-            }
+            data: { full_name: email.split('@')[0] }
           }
         });
-        
+
         if (error) throw error;
         alert('Đăng ký thành công! Vui lòng kiểm tra email để xác nhận.');
         setIsSignUp(false);
       } else {
-        // Sign in
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password
-        });
-        
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
         if (error) throw error;
         onLogin(data.user);
       }
@@ -48,7 +48,15 @@ const Login = ({ onLogin }) => {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8">
+      <div className="max-w-md w-full bg-white rounded-lg shadow-lg p-8 relative">
+        {/* Thêm nút đóng */}
+        <button
+          onClick={() => window.location.reload()}
+          className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+        >
+          <CloseIcon />
+        </button>
+
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-gray-900">
             Hệ thống giám sát nhiệt độ kho lạnh
