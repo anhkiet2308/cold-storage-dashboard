@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   ReferenceLine
 } from 'recharts';
+import { supabase } from './supabaseClient';
 
 // Icons as components
 const ThermostatIcon = () => (
@@ -43,7 +44,7 @@ const DownloadIcon = () => (
   </svg>
 );
 
-// Mock data generator
+// Mock data generator for charts
 const generateMockData = () => {
   const now = new Date();
   const data = [];
@@ -65,36 +66,180 @@ const ColdStorageDashboard = () => {
   const [timeRange, setTimeRange] = useState('24h');
   const [selectedSensor, setSelectedSensor] = useState('all');
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [sensors, setSensors] = useState([]);
+  const [alertHistory, setAlertHistory] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  
-  // Sensor data
-  const [sensors, setSensors] = useState([
-    { id: 1, name: 'Sensor 1 - Kho A', temp: -18.5, status: 'active', minThreshold: -30, maxThreshold: -15 },
-    { id: 2, name: 'Sensor 2 - Kho B', temp: -20.2, status: 'active', minThreshold: -30, maxThreshold: -15 },
-    { id: 3, name: 'Sensor 3 - Kho C', temp: -19.8, status: 'warning', minThreshold: -30, maxThreshold: -15 },
-    { id: 4, name: 'Sensor 4 - Kho D', temp: -17.3, status: 'active', minThreshold: -30, maxThreshold: -15 },
-  ]);
-
   const [chartData, setChartData] = useState(generateMockData());
-  const [alertHistory, setAlertHistory] = useState([
-    { id: 1, time: '2025-05-26 10:30', sensor: 'Sensor 3', type: 'high', temperature: -14.5, status: 'unresolved' },
-    { id: 2, time: '2025-05-26 09:15', sensor: 'Sensor 1', type: 'low', temperature: -31.2, status: 'resolved' },
-  ]);
   
-  // Settings
+  // Settings state
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [smsNotifications, setSmsNotifications] = useState(true);
   const [alertDelay, setAlertDelay] = useState(5);
 
-  // Simulate real-time updates
+  // Fetch sensors từ Supabase
+  const fetchSensors = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('sensors')
+        .select('*')
+        .order('id', { ascending: true });
+
+      if (error) throw error;
+      
+      // Nếu không có data, dùng mock data
+      if (!data || data.length === 0) {
+        setSensors([
+          { id: 1, name: 'Sensor 1 - Kho A', temperature: -18.5, status: 'active', min_threshold: -30, max_threshold: -15 },
+          { id: 2, name: 'Sensor 2 - Kho B', temperature: -20.2, status: 'active', min_threshold: -30, max_threshold: -15 },
+          { id: 3, name: 'Sensor 3 - Kho C', temperature: -19.8, status: 'warning', min_threshold: -30, max_threshold: -15 },
+          { id: 4, name: 'Sensor 4 - Kho D', temperature: -17.3, status: 'active', min_threshold: -30, max_threshold: -15 },
+        ]);
+      } else {
+        setSensors(data);
+      }
+      setLastUpdate(new Date());
+    } catch (error) {
+      console.error('Error fetching sensors:', error);
+      // Use mock data on error
+      setSensors([
+        { id: 1, name: 'Sensor 1 - Kho A', temperature: -18.5, status: 'active', min_threshold: -30, max_threshold: -15 },
+        { id: 2, name: 'Sensor 2 - Kho B', temperature: -20.2, status: 'active', min_threshold: -30, max_threshold: -15 },
+        { id: 3, name: 'Sensor 3 - Kho C', temperature: -19.8, status: 'warning', min_threshold: -30, max_threshold: -15 },
+        { id: 4, name: 'Sensor 4 - Kho D', temperature: -17.3, status: 'active', min_threshold: -30, max_threshold: -15 },
+      ]);
+    }
+  };
+
+  // Fetch alerts từ Supabase
+  const fetchAlerts = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('alerts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+      
+      // Transform data nếu cần
+      const transformedData = data ? data.map(alert => ({
+        ...alert,
+        time: new Date(alert.created_at).toLocaleString('vi-VN'),
+        sensor: `Sensor ${alert.sensor_id}`
+      })) : [];
+      
+      setAlertHistory(transformedData);
+    } catch (error) {
+      console.error('Error fetching alerts:', error);
+      // Use mock data on error
+      setAlertHistory([
+        { id: 1, time: '2025-05-26 10:30', sensor: 'Sensor 3', type: 'high', temperature: -14.5, status: 'unresolved' },
+        { id: 2, time: '2025-05-26 09:15', sensor: 'Sensor 1', type: 'low', temperature: -31.2, status: 'resolved' },
+      ]);
+    }
+  };
+
+  // Update sensor temperature
+  const updateSensorTemperature = async (sensorId, newTemp) => {
+    try {
+      const { error } = await supabase
+        .from('sensors')
+        .update({ temperature: newTemp })
+        .eq('id', sensorId);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error updating sensor:', error);
+    }
+  };
+
+  // Create alert
+  const createAlert = async (sensorId, type, temperature) => {
+    try {
+      const { error } = await supabase
+        .from('alerts')
+        .insert([
+          {
+            sensor_id: sensorId,
+            type: type,
+            temperature: temperature,
+            status: 'unresolved'
+          }
+        ]);
+
+      if (error) throw error;
+    } catch (error) {
+      console.error('Error creating alert:', error);
+    }
+  };
+
+  // Initial load
+  useEffect(() => {
+    fetchSensors();
+    fetchAlerts();
+    setIsLoading(false);
+
+    // Subscribe to realtime changes
+    const sensorsSubscription = supabase
+      .channel('sensors-channel')
+      .on('postgres_changes', 
+        { event: '*', schema: 'public', table: 'sensors' },
+        (payload) => {
+          console.log('Sensor change:', payload);
+          fetchSensors();
+        }
+      )
+      .subscribe();
+
+    const alertsSubscription = supabase
+      .channel('alerts-channel')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'alerts' },
+        (payload) => {
+          console.log('Alert change:', payload);
+          fetchAlerts();
+        }
+      )
+      .subscribe();
+
+    // Simulate temperature updates (for demo)
+    const interval = setInterval(() => {
+      if (sensors.length > 0) {
+        sensors.forEach(sensor => {
+          const variation = (Math.random() - 0.5) * 0.5;
+          const newTemp = Number((sensor.temperature + variation).toFixed(1));
+          
+          // Check thresholds and create alert if needed
+          if (newTemp > sensor.max_threshold || newTemp < sensor.min_threshold) {
+            createAlert(
+              sensor.id,
+              newTemp > sensor.max_threshold ? 'high' : 'low',
+              newTemp
+            );
+          }
+          
+          updateSensorTemperature(sensor.id, newTemp);
+        });
+      }
+    }, 30000); // Update every 30 seconds
+
+    // Cleanup
+    return () => {
+      sensorsSubscription.unsubscribe();
+      alertsSubscription.unsubscribe();
+      clearInterval(interval);
+    };
+  }, [sensors.length]);
+
+  // Simulate real-time updates cho mock mode
   useEffect(() => {
     const interval = setInterval(() => {
       setLastUpdate(new Date());
       setSensors(prevSensors => 
         prevSensors.map(sensor => ({
           ...sensor,
-          temp: Number((sensor.temp + (Math.random() - 0.5) * 0.5).toFixed(1)),
+          temperature: Number((sensor.temperature + (Math.random() - 0.5) * 0.5).toFixed(1)),
           status: Math.random() > 0.9 ? 'warning' : 'active'
         }))
       );
@@ -105,22 +250,26 @@ const ColdStorageDashboard = () => {
 
   const handleRefresh = () => {
     setIsLoading(true);
-    setTimeout(() => {
-      setChartData(generateMockData());
-      setIsLoading(false);
-    }, 1000);
+    fetchSensors();
+    fetchAlerts();
+    setChartData(generateMockData());
+    setTimeout(() => setIsLoading(false), 1000);
   };
 
   const getSensorStatusColor = (sensor) => {
+    if (!sensor) return 'bg-gray-100 text-gray-800 border-gray-200';
+    
     if (sensor.status === 'error') return 'bg-red-100 text-red-800 border-red-200';
-    if (sensor.status === 'warning' || sensor.temp > sensor.maxThreshold || sensor.temp < sensor.minThreshold) 
+    if (sensor.status === 'warning' || sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) 
       return 'bg-yellow-100 text-yellow-800 border-yellow-200';
     return 'bg-green-100 text-green-800 border-green-200';
   };
 
   const getSensorCardColor = (sensor) => {
+    if (!sensor) return 'border-gray-500';
+    
     if (sensor.status === 'error') return 'border-red-500';
-    if (sensor.status === 'warning' || sensor.temp > sensor.maxThreshold || sensor.temp < sensor.minThreshold) 
+    if (sensor.status === 'warning' || sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) 
       return 'border-yellow-500';
     return 'border-green-500';
   };
@@ -175,24 +324,32 @@ const ColdStorageDashboard = () => {
 
         {/* Sensor Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          {sensors.map(sensor => (
-            <div key={sensor.id} className={`bg-white rounded-lg shadow-sm border-2 p-4 ${getSensorCardColor(sensor)}`}>
-              <div className="flex justify-between items-start mb-3">
-                <h3 className="text-sm font-medium text-gray-600">{sensor.name}</h3>
-                <span className={`text-xs px-2 py-1 rounded-full border ${getSensorStatusColor(sensor)}`}>
-                  {sensor.status === 'active' ? 'Hoạt động' : sensor.status === 'warning' ? 'Cảnh báo' : 'Lỗi'}
-                </span>
-              </div>
-              <div className="flex items-center mb-3">
-                <ThermostatIcon />
-                <span className="text-3xl font-bold text-gray-900 ml-2">{sensor.temp}°C</span>
-              </div>
-              <div className="flex justify-between text-xs text-gray-500">
-                <span>Min: {sensor.minThreshold}°C</span>
-                <span>Max: {sensor.maxThreshold}°C</span>
-              </div>
+          {sensors.length === 0 ? (
+            <div className="col-span-4 text-center py-8 text-gray-500">
+              Đang tải dữ liệu cảm biến...
             </div>
-          ))}
+          ) : (
+            sensors.map(sensor => (
+              <div key={sensor.id} className={`bg-white rounded-lg shadow-sm border-2 p-4 ${getSensorCardColor(sensor)}`}>
+                <div className="flex justify-between items-start mb-3">
+                  <h3 className="text-sm font-medium text-gray-600">{sensor.name}</h3>
+                  <span className={`text-xs px-2 py-1 rounded-full border ${getSensorStatusColor(sensor)}`}>
+                    {sensor.status === 'active' ? 'Hoạt động' : sensor.status === 'warning' ? 'Cảnh báo' : 'Lỗi'}
+                  </span>
+                </div>
+                <div className="flex items-center mb-3">
+                  <ThermostatIcon />
+                  <span className="text-3xl font-bold text-gray-900 ml-2">
+                    {sensor.temperature ? sensor.temperature.toFixed(1) : '--'}°C
+                  </span>
+                </div>
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>Min: {sensor.min_threshold}°C</span>
+                  <span>Max: {sensor.max_threshold}°C</span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
 
         {/* Tabs */}
@@ -317,45 +474,53 @@ const ColdStorageDashboard = () => {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {alertHistory.map((alert) => (
-                        <tr key={alert.id}>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.time}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.sensor}
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              alert.type === 'high'
-                                ? 'bg-red-100 text-red-800'
-                                : 'bg-blue-100 text-blue-800'
-                            }`}>
-                              {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                            {alert.temperature}°C
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className={`px-2 py-1 text-xs rounded-full ${
-                              alert.status === 'resolved'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-yellow-100 text-yellow-800'
-                            }`}>
-                              {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
-                            </span>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm">
-                            <button
-                              disabled={alert.status === 'resolved'}
-                              className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
-                            >
-                              Xác nhận
-                            </button>
+                      {alertHistory.length === 0 ? (
+                        <tr>
+                          <td colSpan="6" className="px-6 py-4 text-center text-gray-500">
+                            Không có cảnh báo
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        alertHistory.map((alert) => (
+                          <tr key={alert.id}>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.time}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.sensor}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                alert.type === 'high'
+                                  ? 'bg-red-100 text-red-800'
+                                  : 'bg-blue-100 text-blue-800'
+                              }`}>
+                                {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                              {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs rounded-full ${
+                                alert.status === 'resolved'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm">
+                              <button
+                                disabled={alert.status === 'resolved'}
+                                className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                              >
+                                Xác nhận
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -374,11 +539,16 @@ const ColdStorageDashboard = () => {
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Số lần vượt ngưỡng (7 ngày)</dt>
-                      <dd className="text-sm font-medium text-gray-900">12 lần</dd>
+                      <dd className="text-sm font-medium text-gray-900">{alertHistory.length} lần</dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Nhiệt độ trung bình</dt>
-                      <dd className="text-sm font-medium text-gray-900">-18.9°C</dd>
+                      <dd className="text-sm font-medium text-gray-900">
+                        {sensors.length > 0 
+                          ? (sensors.reduce((sum, s) => sum + s.temperature, 0) / sensors.length).toFixed(1)
+                          : '-18.9'
+                        }°C
+                      </dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Thời gian phản hồi trung bình</dt>
@@ -470,7 +640,7 @@ const ColdStorageDashboard = () => {
                             </label>
                             <input
                               type="number"
-                              defaultValue={sensor.minThreshold}
+                              defaultValue={sensor.min_threshold}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </div>
@@ -480,7 +650,7 @@ const ColdStorageDashboard = () => {
                             </label>
                             <input
                               type="number"
-                              defaultValue={sensor.maxThreshold}
+                              defaultValue={sensor.max_threshold}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </div>
