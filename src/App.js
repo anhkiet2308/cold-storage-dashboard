@@ -11,8 +11,10 @@ import {
   ReferenceLine
 } from 'recharts';
 import { supabase } from './supabaseClient';
+import Login from './components/Login';
+import { exportToPDF, exportToExcel, sendEmailNotification, sendSMSNotification } from './utils/exportUtils';
 
-// Icons as components
+// Icons
 const ThermostatIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
@@ -44,40 +46,88 @@ const DownloadIcon = () => (
   </svg>
 );
 
-// Mock data generator for charts
-const generateMockData = () => {
-  const now = new Date();
-  const data = [];
-  for (let i = 24; i >= 0; i--) {
-    const time = new Date(now - i * 60 * 60 * 1000);
-    data.push({
-      time: time.getHours() + ':00',
-      sensor1: Number((-18 + Math.random() * 4 - 2).toFixed(1)),
-      sensor2: Number((-20 + Math.random() * 4 - 2).toFixed(1)),
-      sensor3: Number((-19 + Math.random() * 4 - 2).toFixed(1)),
-      sensor4: Number((-17 + Math.random() * 4 - 2).toFixed(1)),
-    });
-  }
-  return data;
-};
+const LogoutIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+  </svg>
+);
 
-const ColdStorageDashboard = () => {
+const App = () => {
+  // Authentication state
+  const [user, setUser] = useState(null);
+  const [userProfile, setUserProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  // Dashboard state
   const [activeTab, setActiveTab] = useState('dashboard');
   const [timeRange, setTimeRange] = useState('24h');
   const [selectedSensor, setSelectedSensor] = useState('all');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sensors, setSensors] = useState([]);
   const [alertHistory, setAlertHistory] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [temperatureLogs, setTemperatureLogs] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
-  const [chartData, setChartData] = useState(generateMockData());
+  const [chartData, setChartData] = useState([]);
   
   // Settings state
-  const [emailNotifications, setEmailNotifications] = useState(true);
-  const [smsNotifications, setSmsNotifications] = useState(true);
-  const [alertDelay, setAlertDelay] = useState(5);
+  const [settings, setSettings] = useState({
+    email_notifications: true,
+    sms_notifications: true,
+    alert_delay: 5,
+    notification_emails: ['admin@abfoods.vn'],
+    notification_phones: ['+84123456789']
+  });
 
-  // Fetch sensors từ Supabase
+  // Check authentication
+  useEffect(() => {
+    checkUser();
+    
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        setUser(session.user);
+        await fetchUserProfile(session.user.id);
+      } else {
+        setUser(null);
+        setUserProfile(null);
+      }
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  const checkUser = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        setUser(user);
+        await fetchUserProfile(user.id);
+      }
+    } catch (error) {
+      console.error('Error checking user:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchUserProfile = async (userId) => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (error) throw error;
+      setUserProfile(data);
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+    }
+  };
+
+  // Fetch data functions
   const fetchSensors = async () => {
     try {
       const { data, error } = await supabase
@@ -86,32 +136,13 @@ const ColdStorageDashboard = () => {
         .order('id', { ascending: true });
 
       if (error) throw error;
-      
-      // Nếu không có data, dùng mock data
-      if (!data || data.length === 0) {
-        setSensors([
-          { id: 1, name: 'Sensor 1 - Kho A', temperature: -18.5, status: 'active', min_threshold: -30, max_threshold: -15 },
-          { id: 2, name: 'Sensor 2 - Kho B', temperature: -20.2, status: 'active', min_threshold: -30, max_threshold: -15 },
-          { id: 3, name: 'Sensor 3 - Kho C', temperature: -19.8, status: 'warning', min_threshold: -30, max_threshold: -15 },
-          { id: 4, name: 'Sensor 4 - Kho D', temperature: -17.3, status: 'active', min_threshold: -30, max_threshold: -15 },
-        ]);
-      } else {
-        setSensors(data);
-      }
+      setSensors(data || []);
       setLastUpdate(new Date());
     } catch (error) {
       console.error('Error fetching sensors:', error);
-      // Use mock data on error
-      setSensors([
-        { id: 1, name: 'Sensor 1 - Kho A', temperature: -18.5, status: 'active', min_threshold: -30, max_threshold: -15 },
-        { id: 2, name: 'Sensor 2 - Kho B', temperature: -20.2, status: 'active', min_threshold: -30, max_threshold: -15 },
-        { id: 3, name: 'Sensor 3 - Kho C', temperature: -19.8, status: 'warning', min_threshold: -30, max_threshold: -15 },
-        { id: 4, name: 'Sensor 4 - Kho D', temperature: -17.3, status: 'active', min_threshold: -30, max_threshold: -15 },
-      ]);
     }
   };
 
-  // Fetch alerts từ Supabase
   const fetchAlerts = async () => {
     try {
       const { data, error } = await supabase
@@ -122,7 +153,6 @@ const ColdStorageDashboard = () => {
 
       if (error) throw error;
       
-      // Transform data nếu cần
       const transformedData = data ? data.map(alert => ({
         ...alert,
         time: new Date(alert.created_at).toLocaleString('vi-VN'),
@@ -132,128 +162,217 @@ const ColdStorageDashboard = () => {
       setAlertHistory(transformedData);
     } catch (error) {
       console.error('Error fetching alerts:', error);
-      // Use mock data on error
-      setAlertHistory([
-        { id: 1, time: '2025-05-26 10:30', sensor: 'Sensor 3', type: 'high', temperature: -14.5, status: 'unresolved' },
-        { id: 2, time: '2025-05-26 09:15', sensor: 'Sensor 1', type: 'low', temperature: -31.2, status: 'resolved' },
-      ]);
     }
   };
 
-  // Update sensor temperature
-  const updateSensorTemperature = async (sensorId, newTemp) => {
+  const fetchTemperatureLogs = async () => {
+    try {
+      const timeRangeHours = {
+        '1h': 1,
+        '6h': 6,
+        '24h': 24,
+        '7d': 168,
+        '30d': 720
+      };
+      
+      const fromDate = new Date();
+      fromDate.setHours(fromDate.getHours() - timeRangeHours[timeRange]);
+
+      const { data, error } = await supabase
+        .from('temperature_logs')
+        .select('*')
+        .gte('logged_at', fromDate.toISOString())
+        .order('logged_at', { ascending: true });
+
+      if (error) throw error;
+      
+      // Transform for chart
+      const chartPoints = {};
+      data?.forEach(log => {
+        const time = new Date(log.logged_at).getHours() + ':00';
+        if (!chartPoints[time]) {
+          chartPoints[time] = { time };
+        }
+        chartPoints[time][`sensor${log.sensor_id}`] = log.temperature;
+      });
+      
+      setChartData(Object.values(chartPoints));
+      setTemperatureLogs(data || []);
+    } catch (error) {
+      console.error('Error fetching temperature logs:', error);
+    }
+  };
+
+  const fetchSettings = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('settings')
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setSettings(data);
+      }
+    } catch (error) {
+      console.error('Error fetching settings:', error);
+    }
+  };
+
+  // Update functions
+  const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
+    if (userProfile?.role !== 'admin') {
+      alert('Chỉ admin mới có quyền thay đổi cài đặt!');
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('sensors')
-        .update({ temperature: newTemp })
+        .update({ 
+          min_threshold: minThreshold,
+          max_threshold: maxThreshold,
+          updated_by: user.id
+        })
         .eq('id', sensorId);
 
       if (error) throw error;
+      await fetchSensors();
+      alert('Cập nhật ngưỡng thành công!');
     } catch (error) {
-      console.error('Error updating sensor:', error);
+      console.error('Error updating threshold:', error);
+      alert('Lỗi khi cập nhật ngưỡng!');
     }
   };
 
-  // Create alert
-  const createAlert = async (sensorId, type, temperature) => {
+  const updateSettings = async () => {
+    if (userProfile?.role !== 'admin') {
+      alert('Chỉ admin mới có quyền thay đổi cài đặt!');
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('settings')
+        .update({
+          ...settings,
+          updated_by: user.id,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', 1);
+
+      if (error) throw error;
+      alert('Cập nhật cài đặt thành công!');
+      setSettingsOpen(false);
+    } catch (error) {
+      console.error('Error updating settings:', error);
+      alert('Lỗi khi cập nhật cài đặt!');
+    }
+  };
+
+  const resolveAlert = async (alertId) => {
+    if (userProfile?.role !== 'admin') {
+      alert('Chỉ admin mới có quyền xử lý cảnh báo!');
+      return;
+    }
+
     try {
       const { error } = await supabase
         .from('alerts')
-        .insert([
-          {
-            sensor_id: sensorId,
-            type: type,
-            temperature: temperature,
-            status: 'unresolved'
-          }
-        ]);
+        .update({ 
+          status: 'resolved',
+          resolved_at: new Date().toISOString(),
+          resolved_by: user.id
+        })
+        .eq('id', alertId);
 
       if (error) throw error;
+      await fetchAlerts();
     } catch (error) {
-      console.error('Error creating alert:', error);
+      console.error('Error resolving alert:', error);
     }
   };
 
-  // Initial load
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setUserProfile(null);
+    } catch (error) {
+      console.error('Error logging out:', error);
+    }
+  };
+
+  // Initialize data when user logs in
   useEffect(() => {
-    fetchSensors();
-    fetchAlerts();
-    setIsLoading(false);
+    if (user) {
+      fetchSensors();
+      fetchAlerts();
+      fetchSettings();
+      fetchTemperatureLogs();
 
-    // Subscribe to realtime changes
-    const sensorsSubscription = supabase
-      .channel('sensors-channel')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'sensors' },
-        (payload) => {
-          console.log('Sensor change:', payload);
-          fetchSensors();
-        }
-      )
-      .subscribe();
+      // Subscribe to realtime changes
+      const sensorsSubscription = supabase
+        .channel('sensors-channel')
+        .on('postgres_changes', 
+          { event: '*', schema: 'public', table: 'sensors' },
+          () => fetchSensors()
+        )
+        .subscribe();
 
-    const alertsSubscription = supabase
-      .channel('alerts-channel')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'alerts' },
-        (payload) => {
-          console.log('Alert change:', payload);
-          fetchAlerts();
-        }
-      )
-      .subscribe();
-
-    // Simulate temperature updates (for demo)
-    const interval = setInterval(() => {
-      if (sensors.length > 0) {
-        sensors.forEach(sensor => {
-          const variation = (Math.random() - 0.5) * 0.5;
-          const newTemp = Number((sensor.temperature + variation).toFixed(1));
-          
-          // Check thresholds and create alert if needed
-          if (newTemp > sensor.max_threshold || newTemp < sensor.min_threshold) {
-            createAlert(
-              sensor.id,
-              newTemp > sensor.max_threshold ? 'high' : 'low',
-              newTemp
-            );
+      const alertsSubscription = supabase
+        .channel('alerts-channel')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'alerts' },
+          async (payload) => {
+            if (payload.eventType === 'INSERT' && settings.email_notifications) {
+              // Send notifications
+              const alert = payload.new;
+              if (settings.email_notifications) {
+                await sendEmailNotification(supabase, alert, settings.notification_emails);
+              }
+              if (settings.sms_notifications) {
+                await sendSMSNotification(supabase, alert, settings.notification_phones);
+              }
+            }
+            fetchAlerts();
           }
-          
-          updateSensorTemperature(sensor.id, newTemp);
-        });
-      }
-    }, 30000); // Update every 30 seconds
+        )
+        .subscribe();
 
-    // Cleanup
-    return () => {
-      sensorsSubscription.unsubscribe();
-      alertsSubscription.unsubscribe();
-      clearInterval(interval);
-    };
-  }, [sensors.length]);
+      // Temperature logging interval
+      const loggingInterval = setInterval(async () => {
+        for (const sensor of sensors) {
+          await supabase
+            .from('temperature_logs')
+            .insert([{ sensor_id: sensor.id, temperature: sensor.temperature }]);
+        }
+      }, 60000); // Log every minute
 
-  // Simulate real-time updates cho mock mode
+      return () => {
+        sensorsSubscription.unsubscribe();
+        alertsSubscription.unsubscribe();
+        clearInterval(loggingInterval);
+      };
+    }
+  }, [user, sensors.length]);
+
+  // Fetch temperature logs when timeRange changes
   useEffect(() => {
-    const interval = setInterval(() => {
-      setLastUpdate(new Date());
-      setSensors(prevSensors => 
-        prevSensors.map(sensor => ({
-          ...sensor,
-          temperature: Number((sensor.temperature + (Math.random() - 0.5) * 0.5).toFixed(1)),
-          status: Math.random() > 0.9 ? 'warning' : 'active'
-        }))
-      );
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
+    if (user) {
+      fetchTemperatureLogs();
+    }
+  }, [timeRange, user]);
 
   const handleRefresh = () => {
     setIsLoading(true);
-    fetchSensors();
-    fetchAlerts();
-    setChartData(generateMockData());
-    setTimeout(() => setIsLoading(false), 1000);
+    Promise.all([
+      fetchSensors(),
+      fetchAlerts(),
+      fetchTemperatureLogs()
+    ]).then(() => {
+      setIsLoading(false);
+    });
   };
 
   const getSensorStatusColor = (sensor) => {
@@ -274,6 +393,24 @@ const ColdStorageDashboard = () => {
     return 'border-green-500';
   };
 
+  // Show loading screen
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Đang tải...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show login screen if not authenticated
+  if (!user) {
+    return <Login onLogin={setUser} />;
+  }
+
+  // Main dashboard
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="p-6 max-w-7xl mx-auto">
@@ -283,7 +420,8 @@ const ColdStorageDashboard = () => {
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Hệ thống giám sát nhiệt độ kho lạnh</h1>
               <p className="text-sm text-gray-500 mt-1">
-                Cập nhật lần cuối: {lastUpdate.toLocaleString('vi-VN')}
+                Cập nhật lần cuối: {lastUpdate.toLocaleString('vi-VN')} | 
+                Xin chào, {userProfile?.email} ({userProfile?.role === 'admin' ? 'Quản trị viên' : 'Người dùng'})
               </p>
             </div>
             <div className="flex gap-2">
@@ -294,12 +432,14 @@ const ColdStorageDashboard = () => {
               >
                 <RefreshIcon />
               </button>
-              <button
-                onClick={() => setSettingsOpen(true)}
-                className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
-              >
-                <SettingsIcon />
-              </button>
+              {userProfile?.role === 'admin' && (
+                <button
+                  onClick={() => setSettingsOpen(true)}
+                  className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
+                >
+                  <SettingsIcon />
+                </button>
+              )}
               <div className="relative">
                 <button className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50">
                   <BellIcon />
@@ -310,6 +450,13 @@ const ColdStorageDashboard = () => {
                   </span>
                 )}
               </div>
+              <button
+                onClick={handleLogout}
+                className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50"
+                title="Đăng xuất"
+              >
+                <LogoutIcon />
+              </button>
             </div>
           </div>
         </div>
@@ -324,32 +471,26 @@ const ColdStorageDashboard = () => {
 
         {/* Sensor Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          {sensors.length === 0 ? (
-            <div className="col-span-4 text-center py-8 text-gray-500">
-              Đang tải dữ liệu cảm biến...
-            </div>
-          ) : (
-            sensors.map(sensor => (
-              <div key={sensor.id} className={`bg-white rounded-lg shadow-sm border-2 p-4 ${getSensorCardColor(sensor)}`}>
-                <div className="flex justify-between items-start mb-3">
-                  <h3 className="text-sm font-medium text-gray-600">{sensor.name}</h3>
-                  <span className={`text-xs px-2 py-1 rounded-full border ${getSensorStatusColor(sensor)}`}>
-                    {sensor.status === 'active' ? 'Hoạt động' : sensor.status === 'warning' ? 'Cảnh báo' : 'Lỗi'}
-                  </span>
-                </div>
-                <div className="flex items-center mb-3">
-                  <ThermostatIcon />
-                  <span className="text-3xl font-bold text-gray-900 ml-2">
-                    {sensor.temperature ? sensor.temperature.toFixed(1) : '--'}°C
-                  </span>
-                </div>
-                <div className="flex justify-between text-xs text-gray-500">
-                  <span>Min: {sensor.min_threshold}°C</span>
-                  <span>Max: {sensor.max_threshold}°C</span>
-                </div>
+          {sensors.map(sensor => (
+            <div key={sensor.id} className={`bg-white rounded-lg shadow-sm border-2 p-4 ${getSensorCardColor(sensor)}`}>
+              <div className="flex justify-between items-start mb-3">
+                <h3 className="text-sm font-medium text-gray-600">{sensor.name}</h3>
+                <span className={`text-xs px-2 py-1 rounded-full border ${getSensorStatusColor(sensor)}`}>
+                  {sensor.status === 'active' ? 'Hoạt động' : sensor.status === 'warning' ? 'Cảnh báo' : 'Lỗi'}
+                </span>
               </div>
-            ))
-          )}
+              <div className="flex items-center mb-3">
+                <ThermostatIcon />
+                <span className="text-3xl font-bold text-gray-900 ml-2">
+                  {sensor.temperature ? sensor.temperature.toFixed(1) : '--'}°C
+                </span>
+              </div>
+              <div className="flex justify-between text-xs text-gray-500">
+                <span>Min: {sensor.min_threshold}°C</span>
+                <span>Max: {sensor.max_threshold}°C</span>
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* Tabs */}
@@ -411,10 +552,9 @@ const ColdStorageDashboard = () => {
                     className="px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="all">Tất cả cảm biến</option>
-                    <option value="1">Sensor 1</option>
-                    <option value="2">Sensor 2</option>
-                    <option value="3">Sensor 3</option>
-                    <option value="4">Sensor 4</option>
+                    {sensors.map(sensor => (
+                      <option key={sensor.id} value={sensor.id}>{sensor.name}</option>
+                    ))}
                   </select>
                 </div>
 
@@ -428,18 +568,22 @@ const ColdStorageDashboard = () => {
                       <Legend />
                       <ReferenceLine y={-15} stroke="red" strokeDasharray="5 5" label="Ngưỡng cao" />
                       <ReferenceLine y={-30} stroke="blue" strokeDasharray="5 5" label="Ngưỡng thấp" />
-                      {(selectedSensor === 'all' || selectedSensor === '1') && (
-                        <Line type="monotone" dataKey="sensor1" stroke="#ef4444" name="Sensor 1" strokeWidth={2} />
-                      )}
-                      {(selectedSensor === 'all' || selectedSensor === '2') && (
-                        <Line type="monotone" dataKey="sensor2" stroke="#3b82f6" name="Sensor 2" strokeWidth={2} />
-                      )}
-                      {(selectedSensor === 'all' || selectedSensor === '3') && (
-                        <Line type="monotone" dataKey="sensor3" stroke="#eab308" name="Sensor 3" strokeWidth={2} />
-                      )}
-                      {(selectedSensor === 'all' || selectedSensor === '4') && (
-                        <Line type="monotone" dataKey="sensor4" stroke="#10b981" name="Sensor 4" strokeWidth={2} />
-                      )}
+                      {sensors.map((sensor, index) => {
+                        if (selectedSensor === 'all' || selectedSensor == sensor.id) {
+                          const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
+                          return (
+                            <Line 
+                              key={sensor.id}
+                              type="monotone" 
+                              dataKey={`sensor${sensor.id}`} 
+                              stroke={colors[index % colors.length]} 
+                              name={sensor.name} 
+                              strokeWidth={2} 
+                            />
+                          );
+                        }
+                        return null;
+                      })}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -468,59 +612,56 @@ const ColdStorageDashboard = () => {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Trạng thái
                         </th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                          Hành động
-                        </th>
+                        {userProfile?.role === 'admin' && (
+                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                            Hành động
+                          </th>
+                        )}
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {alertHistory.length === 0 ? (
-                        <tr>
-                          <td colSpan="6" className="px-6 py-4 text-center text-gray-500">
-                            Không có cảnh báo
+                      {alertHistory.map((alert) => (
+                        <tr key={alert.id}>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {alert.time}
                           </td>
-                        </tr>
-                      ) : (
-                        alertHistory.map((alert) => (
-                          <tr key={alert.id}>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              {alert.time}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              {alert.sensor}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span className={`px-2 py-1 text-xs rounded-full ${
-                                alert.type === 'high'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-blue-100 text-blue-800'
-                              }`}>
-                                {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
-                              </span>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                              <span className={`px-2 py-1 text-xs rounded-full ${
-                                alert.status === 'resolved'
-                                  ? 'bg-green-100 text-green-800'
-                                  : 'bg-yellow-100 text-yellow-800'
-                              }`}>
-                                {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
-                              </span>
-                            </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {alert.sensor}
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 py-1 text-xs rounded-full ${
+                              alert.type === 'high'
+                                ? 'bg-red-100 text-red-800'
+                                : 'bg-blue-100 text-blue-800'
+                            }`}>
+                              {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                            {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                          </td>
+                          <td className="px-6 py-4 whitespace-nowrap">
+                            <span className={`px-2 py-1 text-xs rounded-full ${
+                              alert.status === 'resolved'
+                                ? 'bg-green-100 text-green-800'
+                                : 'bg-yellow-100 text-yellow-800'
+                            }`}>
+                              {alert.status === 'resolved' ? 'Đã xử lý' : 'Chưa xử lý'}
+                            </span>
+                          </td>
+                          {userProfile?.role === 'admin' && (
                             <td className="px-6 py-4 whitespace-nowrap text-sm">
                               <button
+                                onClick={() => resolveAlert(alert.id)}
                                 disabled={alert.status === 'resolved'}
                                 className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
                               >
                                 Xác nhận
                               </button>
                             </td>
-                          </tr>
-                        ))
-                      )}
+                          )}
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
@@ -535,7 +676,12 @@ const ColdStorageDashboard = () => {
                   <dl className="space-y-4">
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Thời gian hoạt động ổn định</dt>
-                      <dd className="text-sm font-medium text-gray-900">98.5%</dd>
+                      <dd className="text-sm font-medium text-gray-900">
+                        {sensors.length > 0 
+                          ? Math.round(sensors.filter(s => s.status === 'active').length / sensors.length * 100)
+                          : 0
+                        }%
+                      </dd>
                     </div>
                     <div className="flex justify-between">
                       <dt className="text-sm text-gray-600">Số lần vượt ngưỡng (7 ngày)</dt>
@@ -546,13 +692,15 @@ const ColdStorageDashboard = () => {
                       <dd className="text-sm font-medium text-gray-900">
                         {sensors.length > 0 
                           ? (sensors.reduce((sum, s) => sum + s.temperature, 0) / sensors.length).toFixed(1)
-                          : '-18.9'
+                          : '--'
                         }°C
                       </dd>
                     </div>
                     <div className="flex justify-between">
-                      <dt className="text-sm text-gray-600">Thời gian phản hồi trung bình</dt>
-                      <dd className="text-sm font-medium text-gray-900">45 giây</dd>
+                      <dt className="text-sm text-gray-600">Cảnh báo chưa xử lý</dt>
+                      <dd className="text-sm font-medium text-gray-900">
+                        {alertHistory.filter(a => a.status === 'unresolved').length} cảnh báo
+                      </dd>
                     </div>
                   </dl>
                 </div>
@@ -560,19 +708,19 @@ const ColdStorageDashboard = () => {
                 <div className="bg-gray-50 rounded-lg p-6">
                   <h3 className="text-lg font-medium text-gray-900 mb-4">Xuất báo cáo</h3>
                   <div className="space-y-4">
-                    <select className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                      <option>Báo cáo theo giờ</option>
-                      <option>Báo cáo theo ngày</option>
-                      <option>Báo cáo theo tuần</option>
-                      <option>Báo cáo theo tháng</option>
-                    </select>
-                    <button className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2">
+                    <button 
+                      onClick={() => exportToPDF(alertHistory, 'alerts')}
+                      className="w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center justify-center gap-2"
+                    >
                       <DownloadIcon />
-                      Xuất PDF
+                      Xuất báo cáo cảnh báo (PDF)
                     </button>
-                    <button className="w-full px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center justify-center gap-2">
+                    <button 
+                      onClick={() => exportToExcel(temperatureLogs, sensors, 'temperature')}
+                      className="w-full px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center justify-center gap-2"
+                    >
                       <DownloadIcon />
-                      Xuất Excel
+                      Xuất báo cáo nhiệt độ (Excel)
                     </button>
                   </div>
                 </div>
@@ -581,8 +729,8 @@ const ColdStorageDashboard = () => {
           </div>
         </div>
 
-        {/* Settings Modal */}
-        {settingsOpen && (
+        {/* Settings Modal - Only for Admin */}
+        {settingsOpen && userProfile?.role === 'admin' && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
             <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
               <div className="p-6 border-b border-gray-200">
@@ -597,8 +745,8 @@ const ColdStorageDashboard = () => {
                     <label className="flex items-center">
                       <input
                         type="checkbox"
-                        checked={emailNotifications}
-                        onChange={(e) => setEmailNotifications(e.target.checked)}
+                        checked={settings.email_notifications}
+                        onChange={(e) => setSettings({...settings, email_notifications: e.target.checked})}
                         className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                       />
                       <span className="ml-2 text-sm text-gray-700">Gửi cảnh báo qua Email</span>
@@ -606,8 +754,8 @@ const ColdStorageDashboard = () => {
                     <label className="flex items-center">
                       <input
                         type="checkbox"
-                        checked={smsNotifications}
-                        onChange={(e) => setSmsNotifications(e.target.checked)}
+                        checked={settings.sms_notifications}
+                        onChange={(e) => setSettings({...settings, sms_notifications: e.target.checked})}
                         className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                       />
                       <span className="ml-2 text-sm text-gray-700">Gửi cảnh báo qua SMS</span>
@@ -618,9 +766,31 @@ const ColdStorageDashboard = () => {
                       </label>
                       <input
                         type="number"
-                        value={alertDelay}
-                        onChange={(e) => setAlertDelay(e.target.value)}
+                        value={settings.alert_delay}
+                        onChange={(e) => setSettings({...settings, alert_delay: parseInt(e.target.value)})}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Danh sách email nhận cảnh báo (mỗi email một dòng)
+                      </label>
+                      <textarea
+                        value={settings.notification_emails?.join('\n') || ''}
+                        onChange={(e) => setSettings({...settings, notification_emails: e.target.value.split('\n').filter(e => e.trim())})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        rows="3"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Danh sách số điện thoại nhận SMS (mỗi số một dòng)
+                      </label>
+                      <textarea
+                        value={settings.notification_phones?.join('\n') || ''}
+                        onChange={(e) => setSettings({...settings, notification_phones: e.target.value.split('\n').filter(e => e.trim())})}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        rows="3"
                       />
                     </div>
                   </div>
@@ -640,6 +810,7 @@ const ColdStorageDashboard = () => {
                             </label>
                             <input
                               type="number"
+                              id={`min-${sensor.id}`}
                               defaultValue={sensor.min_threshold}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -650,6 +821,7 @@ const ColdStorageDashboard = () => {
                             </label>
                             <input
                               type="number"
+                              id={`max-${sensor.id}`}
                               defaultValue={sensor.max_threshold}
                               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -669,7 +841,17 @@ const ColdStorageDashboard = () => {
                   Hủy
                 </button>
                 <button
-                  onClick={() => setSettingsOpen(false)}
+                  onClick={async () => {
+                    await updateSettings();
+                    // Update thresholds
+                    for (const sensor of sensors) {
+                      const minValue = document.getElementById(`min-${sensor.id}`).value;
+                      const maxValue = document.getElementById(`max-${sensor.id}`).value;
+                      if (minValue != sensor.min_threshold || maxValue != sensor.max_threshold) {
+                        await updateSensorThreshold(sensor.id, parseFloat(minValue), parseFloat(maxValue));
+                      }
+                    }
+                  }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                 >
                   Lưu
@@ -683,4 +865,4 @@ const ColdStorageDashboard = () => {
   );
 };
 
-export default ColdStorageDashboard;
+export default App;
