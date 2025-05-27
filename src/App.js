@@ -14,6 +14,23 @@ import { supabase } from './supabaseClient';
 import Login from './components/Login';
 import { exportToPDF, exportToExcel } from './utils/exportUtils';
 
+useEffect(() => {
+  // Block các kết nối không mong muốn
+  const originalFetch = window.fetch;
+  window.fetch = function(...args) {
+    const url = args[0];
+    if (typeof url === 'string' && url.includes('cold-storage-dashboard')) {
+      console.log('Blocked unwanted connection to:', url);
+      return Promise.reject(new Error('Blocked connection'));
+    }
+    return originalFetch.apply(this, args);
+  };
+
+  return () => {
+    window.fetch = originalFetch;
+  };
+}, []);
+
 // Icons
 const ThermostatIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

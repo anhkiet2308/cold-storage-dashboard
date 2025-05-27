@@ -11,6 +11,10 @@ root.render(
   </React.StrictMode>
 );
 
+window.addEventListener('unhandledrejection', event => {
+  console.log('Unhandled promise rejection:', event.reason);
+  event.preventDefault(); // Prevent default browser behavior
+});
 // If you want to start measuring performance in your app, pass a function
 // to log results (for example: reportWebVitals(console.log))
 // or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
