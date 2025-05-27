@@ -10,7 +10,8 @@ if (!supabaseUrl || !supabaseKey) {
   console.error('REACT_APP_SUPABASE_URL:', supabaseUrl ? 'Set' : 'Missing');
   console.error('REACT_APP_SUPABASE_ANON_KEY:', supabaseKey ? 'Set' : 'Missing');
 }
-const { data, error } = await supabase.from('sensors').select('count').limit(1);
+
+// TẠO SUPABASE CLIENT TRƯỚC
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   realtime: {
     params: {
@@ -25,7 +26,7 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
   }
 });
 
-// Test connection function
+// Test connection function - SAU KHI ĐÃ TẠO CLIENT
 export const testConnection = async () => {
   try {
     const { data, error } = await supabase.from('sensors').select('count').limit(1);
