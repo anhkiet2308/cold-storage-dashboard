@@ -59,6 +59,22 @@ const LogoutIcon = () => (
 );
 
 const App = () => {
+  console.log('App component loaded');
+  
+  // ... rest of code
+  
+  if (loading) {
+    console.log('App is loading...');
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+          <p className="mt-4 text-gray-600">Đang tải...</p>
+        </div>
+      </div>
+    );
+  }
+
   // Authentication state
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
