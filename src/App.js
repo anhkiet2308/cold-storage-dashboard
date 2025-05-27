@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { Line } from 'recharts';
 import {
   LineChart,
   XAxis,
@@ -8,7 +7,8 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ReferenceLine
+  ReferenceLine,
+  Line  // Thêm vào đây
 } from 'recharts';
 import { supabase } from './supabaseClient';
 import Login from './components/Login';
@@ -245,13 +245,14 @@ const App = () => {
 
   // Update sensor temperature and check thresholds
   const updateSensorTemperature = async () => {
-    if (!user) return; // Only update if logged in
-    
-    for (const sensor of sensors) {
-      const variation = (Math.random() - 0.5) * 0.5;
-      const newTemp = Number((sensor.temperature + variation).toFixed(1));
-      
+  if (!user) return;
+  
+  try {
+    const updatePromises = sensors.map(async (sensor) => {
       try {
+        const variation = (Math.random() - 0.5) * 0.5;
+        const newTemp = Number((sensor.temperature + variation).toFixed(1));
+        
         // Update sensor temperature
         const { error: updateError } = await supabase
           .from('sensors')
@@ -294,11 +295,25 @@ const App = () => {
             });
           }
         }
+        
+        return { success: true, sensorId: sensor.id };
       } catch (error) {
-        console.error('Error updating sensor:', error);
+        console.error(`Error updating sensor ${sensor.id}:`, error);
+        return { success: false, sensorId: sensor.id, error };
       }
+    });
+
+    const results = await Promise.allSettled(updatePromises);
+    const failures = results.filter(r => r.status === 'rejected' || !r.value?.success);
+    
+    if (failures.length > 0) {
+      console.warn(`${failures.length} sensor updates failed`);
     }
-  };
+    
+  } catch (error) {
+    console.error('Error in updateSensorTemperature:', error);
+  }
+};
 
   // Update functions
   const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
@@ -388,55 +403,82 @@ const App = () => {
   };
 
   // Initialize data and subscriptions
-  useEffect(() => {
-    // Always fetch data, even for anonymous users
-    fetchSensors();
-    fetchAlerts();
-    fetchSettings();
-    fetchTemperatureLogs();
+  // Thay thế phần Subscribe realtime trong useEffect
+useEffect(() => {
+  // Always fetch data, even for anonymous users
+  fetchSensors();
+  fetchAlerts();
+  fetchSettings();
+  fetchTemperatureLogs();
 
-    // Request notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission();
-    }
+  // Request notification permission
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
 
-    // Subscribe to realtime changes
-    const sensorsChannel = supabase
-      .channel('public:sensors')
-      .on('postgres_changes', 
-        { event: '*', schema: 'public', table: 'sensors' },
-        () => {
-          fetchSensors();
-        }
-      )
-      .subscribe();
+  // Subscribe to realtime changes với error handling
+  const sensorsChannel = supabase
+    .channel('public:sensors')
+    .on('postgres_changes', 
+      { event: '*', schema: 'public', table: 'sensors' },
+      (payload) => {
+        console.log('Sensors change:', payload);
+        fetchSensors();
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('Sensors channel subscribed');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('Sensors channel error');
+      }
+    });
 
-    const alertsChannel = supabase
-      .channel('public:alerts')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'alerts' },
-        () => {
-          fetchAlerts();
-        }
-      )
-      .subscribe();
+  const alertsChannel = supabase
+    .channel('public:alerts')
+    .on('postgres_changes',
+      { event: '*', schema: 'public', table: 'alerts' },
+      (payload) => {
+        console.log('Alerts change:', payload);
+        fetchAlerts();
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('Alerts channel subscribed');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('Alerts channel error');
+      }
+    });
 
-    const logsChannel = supabase
-      .channel('public:temperature_logs')
-      .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'temperature_logs' },
-        () => {
-          fetchTemperatureLogs();
-        }
-      )
-      .subscribe();
+  const logsChannel = supabase
+    .channel('public:temperature_logs')
+    .on('postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'temperature_logs' },
+      (payload) => {
+        console.log('Logs change:', payload);
+        fetchTemperatureLogs();
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('Temperature logs channel subscribed');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('Temperature logs channel error');
+      }
+    });
 
-    return () => {
-      sensorsChannel.unsubscribe();
-      alertsChannel.unsubscribe();
-      logsChannel.unsubscribe();
-    };
-  }, []);
+  return () => {
+    // Cleanup với error handling
+    Promise.all([
+      sensorsChannel.unsubscribe(),
+      alertsChannel.unsubscribe(),
+      logsChannel.unsubscribe()
+    ]).catch(error => {
+      console.error('Error unsubscribing channels:', error);
+    });
+  };
+}, []);
 
   // Temperature update interval - only when user is logged in
   useEffect(() => {
@@ -458,16 +500,37 @@ const App = () => {
     fetchTemperatureLogs();
   }, [timeRange]);
 
-  const handleRefresh = () => {
-    setIsLoading(true);
-    Promise.all([
-      fetchSensors(),
-      fetchAlerts(),
-      fetchTemperatureLogs()
-    ]).then(() => {
-      setTimeout(() => setIsLoading(false), 500);
-    });
-  };
+  const fetchWithRetry = async (fetchFunction, retries = 3) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await fetchFunction();
+      return;
+    } catch (error) {
+      console.error(`Fetch attempt ${i + 1} failed:`, error);
+      if (i === retries - 1) {
+        throw error;
+      }
+      // Wait before retry (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+    }
+  }
+};
+
+  const handleRefresh = async () => {
+  setIsLoading(true);
+  try {
+    await Promise.all([
+      fetchWithRetry(fetchSensors),
+      fetchWithRetry(fetchAlerts),
+      fetchWithRetry(fetchTemperatureLogs)
+    ]);
+  } catch (error) {
+    console.error('Error refreshing data:', error);
+    // Có thể hiển thị toast notification lỗi ở đây
+  } finally {
+    setTimeout(() => setIsLoading(false), 500);
+  }
+};
 
   const getSensorStatusColor = (sensor) => {
     if (!sensor) return 'bg-gray-100 text-gray-800 border-gray-200';
