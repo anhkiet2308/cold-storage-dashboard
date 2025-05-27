@@ -14,23 +14,6 @@ import { supabase } from './supabaseClient';
 import Login from './components/Login';
 import { exportToPDF, exportToExcel } from './utils/exportUtils';
 
-useEffect(() => {
-  // Block các kết nối không mong muốn
-  const originalFetch = window.fetch;
-  window.fetch = function(...args) {
-    const url = args[0];
-    if (typeof url === 'string' && url.includes('cold-storage-dashboard')) {
-      console.log('Blocked unwanted connection to:', url);
-      return Promise.reject(new Error('Blocked connection'));
-    }
-    return originalFetch.apply(this, args);
-  };
-
-  return () => {
-    window.fetch = originalFetch;
-  };
-}, []);
-
 // Icons
 const ThermostatIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -105,6 +88,15 @@ const App = () => {
 
   // Check authentication
   useEffect(() => {
+    
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for(let registration of registrations) {
+          registration.unregister();
+        }
+      });
+    }
+
     checkUser();
     
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -770,7 +762,7 @@ useEffect(() => {
                         <ReferenceLine y={-15} stroke="red" strokeDasharray="5 5" label="Ngưỡng cao" />
                         <ReferenceLine y={-30} stroke="blue" strokeDasharray="5 5" label="Ngưỡng thấp" />
                         {sensors.map((sensor, index) => {
-                          if (selectedSensor === 'all' || selectedSensor == sensor.id) {
+                          if (selectedSensor === 'all' || selectedSensor === sensor.id.toString()) {
                             const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
                             return (
                               <Line 
@@ -1067,7 +1059,7 @@ useEffect(() => {
                     for (const sensor of sensors) {
                       const minValue = document.getElementById(`min-${sensor.id}`).value;
                       const maxValue = document.getElementById(`max-${sensor.id}`).value;
-                      if (minValue != sensor.min_threshold || maxValue != sensor.max_threshold) {
+                      if (minValue !== sensor.min_threshold || maxValue !== sensor.max_threshold) {
                         await updateSensorThreshold(sensor.id, parseFloat(minValue), parseFloat(maxValue));
                       }
                     }

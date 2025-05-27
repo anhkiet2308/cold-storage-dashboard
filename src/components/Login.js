@@ -22,7 +22,7 @@ const Login = ({ onLogin }) => {
 
     try {
       if (isSignUp) {
-        const { data, error } = await supabase.auth.signUp({
+        const { data, error } = await supabase.auth.signInWithPassword({
           email,
           password,
           options: {
