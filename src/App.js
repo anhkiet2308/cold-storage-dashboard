@@ -212,20 +212,30 @@ const fetchUserProfile = async (userId) => {
 
   // Fetch data functions
   const fetchSensors = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('sensors')
-        .select('*')
-        .order('id', { ascending: true });
+  console.log('🔍 fetchSensors called (using fetch)');
+  try {
+    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/sensors?select=*&order=id.asc`, {
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-      if (error) throw error;
-      setSensors(data || []);
-      setLastUpdate(new Date());
-      
-    } catch (error) {
-      console.error('Error fetching sensors:', error);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-  };
+
+    const data = await response.json();
+    console.log('📊 Sensors data received:', data);
+    
+    setSensors(data || []);
+    setLastUpdate(new Date());
+    
+  } catch (error) {
+    console.error('💥 Error fetching sensors:', error);
+  }
+};
 
   const fetchAlerts = async () => {
     try {
