@@ -388,27 +388,30 @@ const fetchUserProfile = async (userId) => {
       const data = await response.json();
       console.log('📈 Temperature logs received:', data);
       
-      // Improved grouping with higher resolution
+      // Improved grouping with VIETNAM TIMEZONE
       const chartPoints = {};
       const groupingMinutes = timeRange === '1h' ? 5 : 
                             timeRange === '6h' ? 15 : 
                             timeRange === '24h' ? 60 : 
-                            timeRange === '7d' ? 360 : 1440; // 6 hours for 7d, 1 day for 30d
+                            timeRange === '7d' ? 360 : 1440;
       
       data?.forEach(log => {
-        const date = new Date(log.logged_at);
+        // CONVERT TO VIETNAM TIMEZONE (UTC+7)
+        const utcDate = new Date(log.logged_at);
+        const vnDate = new Date(utcDate.getTime() + (7 * 60 * 60 * 1000)); // Add 7 hours
+        
         // Group by specific time intervals for better resolution
-        const roundedMinutes = Math.floor(date.getMinutes() / groupingMinutes) * groupingMinutes;
-        const groupKey = `${date.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
-        const dayKey = date.toDateString();
+        const roundedMinutes = Math.floor(vnDate.getMinutes() / groupingMinutes) * groupingMinutes;
+        const groupKey = `${vnDate.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
+        const dayKey = vnDate.toDateString();
         const fullKey = timeRange === '7d' || timeRange === '30d' ? 
                         `${dayKey} ${groupKey}` : groupKey;
         
         if (!chartPoints[fullKey]) {
           chartPoints[fullKey] = { 
             time: timeRange === '7d' || timeRange === '30d' ? 
-                  `${date.getDate()}/${date.getMonth() + 1} ${groupKey}` : groupKey,
-            timestamp: date.getTime()
+                  `${vnDate.getDate()}/${vnDate.getMonth() + 1} ${groupKey}` : groupKey,
+            timestamp: vnDate.getTime()
           };
         }
         chartPoints[fullKey][`sensor${log.sensor_id}`] = log.temperature;
@@ -422,14 +425,13 @@ const fetchUserProfile = async (userId) => {
         });
       
       console.log('📊 Chart data points:', chartArray.length);
+      console.log('🕐 Current VN time:', new Date(Date.now() + 7*60*60*1000).toLocaleString('vi-VN'));
       setChartData(chartArray);
       setTemperatureLogs(data || []);
     } catch (error) {
       console.error('💥 Error fetching temperature logs:', error);
-    }
-    finally {
-    // THÊM DÒNG NÀY
-    setChartLoading(false);
+    } finally {
+      setChartLoading(false);
     }
   };
 
@@ -476,18 +478,22 @@ const fetchUserProfile = async (userId) => {
           let lastLogTime = null;
           
           if (data.length === 0) {
-            // No logs found = offline
             isOffline = true;
             minutesOffline = Infinity;
             console.log(`📊 Sensor ${sensor.name}: 🔴 OFFLINE (No logs found)`);
           } else {
             const lastLog = data[0];
-            lastLogTime = new Date(lastLog.logged_at);
-            const timeDiff = now - lastLogTime;
+            const utcTime = new Date(lastLog.logged_at);
+            const vnTime = new Date(utcTime.getTime() + (7 * 60 * 60 * 1000)); // Convert to VN time
+            const vnNow = new Date(Date.now() + (7 * 60 * 60 * 1000)); // Current VN time
+            
+            const timeDiff = vnNow - vnTime;
             minutesOffline = Math.floor(timeDiff / (1000 * 60));
             isOffline = timeDiff > healthThreshold;
             
-            console.log(`📊 Sensor ${sensor.name}: ${isOffline ? '🔴 OFFLINE' : '🟢 ONLINE'} (${minutesOffline} minutes ago)`);
+            console.log(`📊 Sensor ${sensor.name}: ${isOffline ? '🔴 OFFLINE' : '🟢 ONLINE'} (${minutesOffline} minutes ago VN time)`);
+            console.log(`🕐 Last log VN time: ${vnTime.toLocaleString('vi-VN')}`);
+            console.log(`🕐 Current VN time: ${vnNow.toLocaleString('vi-VN')}`);
           }
           
           // Update sensor status in database
@@ -1455,7 +1461,10 @@ if (!user || showLogin) {
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="time" />
                         <YAxis domain={['dataMin - 5', 'dataMax + 5']} />
-                        <Tooltip />
+                        <Tooltip 
+                          labelFormatter={(label) => `Thời gian: ${label} (GMT+7)`}
+                          formatter={(value, name) => [`${value}°C`, name]}
+                        />
                         <Legend />
                         
                         {/* Dynamic Reference Lines with debugging */}
