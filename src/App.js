@@ -192,6 +192,24 @@ useEffect(() => {
   }
 };
 
+const fetchUserProfile = async (userId) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', userId)
+      .single();
+
+    if (error) {
+      console.log('Profile not found, creating default user profile');
+      return;
+    }
+    setUserProfile(data);
+  } catch (error) {
+    console.error('Error fetching profile:', error);
+  }
+};
+
   // Fetch data functions
   const fetchSensors = async () => {
     try {
