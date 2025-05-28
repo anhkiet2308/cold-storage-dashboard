@@ -428,29 +428,45 @@ const fetchUserProfile = async (userId) => {
 
   // Update functions
   const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
-    if (!user || userProfile?.role !== 'admin') {
-      alert('Chỉ admin mới có quyền thay đổi cài đặt!');
-      return;
+  if (!user || userProfile?.role !== 'admin') {
+    alert('Chỉ admin mới có quyền thay đổi cài đặt!');
+    return;
+  }
+
+  console.log(`🔧 Updating sensor ${sensorId} thresholds:`, { minThreshold, maxThreshold });
+  try {
+    const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/sensors?id=eq.${sensorId}`;
+    
+    const response = await fetch(urlWithFilter, {
+      method: 'PATCH',
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({ 
+        min_threshold: parseFloat(minThreshold),
+        max_threshold: parseFloat(maxThreshold),
+        updated_at: new Date().toISOString()
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
 
-    try {
-      const { error } = await supabase
-        .from('sensors')
-        .update({ 
-          min_threshold: minThreshold,
-          max_threshold: maxThreshold,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', sensorId);
-
-      if (error) throw error;
-      await fetchSensors();
-      alert('Cập nhật ngưỡng thành công!');
-    } catch (error) {
-      console.error('Error updating threshold:', error);
-      alert('Lỗi khi cập nhật ngưỡng!');
-    }
-  };
+    console.log('✅ Sensor threshold updated successfully');
+    
+    // Force refresh sensors để thấy thay đổi ngay
+    await fetchSensors();
+    
+  } catch (error) {
+    console.error('❌ Error updating threshold:', error);
+    alert('Lỗi khi cập nhật ngưỡng: ' + error.message);
+  }
+};
 
   const updateSettings = async () => {
     if (!user || userProfile?.role !== 'admin') {
@@ -491,9 +507,9 @@ const fetchUserProfile = async (userId) => {
     return;
   }
 
-  console.log('🔄 Resolving alert:', alertId);
+  console.log('🔄 Resolving alert ID:', alertId);
   try {
-    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?id=eq.${alertId}`, {
+    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts`, {
       method: 'PATCH',
       headers: {
         'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
@@ -508,15 +524,35 @@ const fetchUserProfile = async (userId) => {
       })
     });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+    const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?id=eq.${alertId}`;
+    
+    const patchResponse = await fetch(urlWithFilter, {
+      method: 'PATCH',
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        status: 'resolved',
+        resolved_at: new Date().toISOString(),
+        resolved_by: user.id
+      })
+    });
+
+    if (!patchResponse.ok) {
+      throw new Error(`HTTP error! status: ${patchResponse.status}`);
     }
 
     console.log('✅ Alert resolved successfully');
-    await fetchAlerts(); // Refresh alerts
+    
+    // Force refresh alerts để thấy thay đổi ngay
+    await fetchAlerts();
+    
   } catch (error) {
     console.error('❌ Error resolving alert:', error);
-    alert('Lỗi khi xử lý cảnh báo!');
+    alert('Lỗi khi xử lý cảnh báo: ' + error.message);
   }
 };
 
@@ -1324,14 +1360,34 @@ useEffect(() => {
                 </button>
                 <button
                   onClick={async () => {
-                    await updateSettings();
-                    // Update thresholds
-                    for (const sensor of sensors) {
-                      const minValue = document.getElementById(`min-${sensor.id}`).value;
-                      const maxValue = document.getElementById(`max-${sensor.id}`).value;
-                      if (minValue !== sensor.min_threshold.toString() || maxValue !== sensor.max_threshold.toString()) {
-                        await updateSensorThreshold(sensor.id, parseFloat(minValue), parseFloat(maxValue));
+                    console.log('💾 Saving all settings...');
+                    
+                    try {
+                      // 1. Update general settings
+                      await updateSettings();
+                      
+                      // 2. Update thresholds cho từng sensor
+                      for (const sensor of sensors) {
+                        const minValue = document.getElementById(`min-${sensor.id}`).value;
+                        const maxValue = document.getElementById(`max-${sensor.id}`).value;
+                        
+                        console.log(`Checking sensor ${sensor.id}:`, {
+                          current: { min: sensor.min_threshold, max: sensor.max_threshold },
+                          new: { min: minValue, max: maxValue }
+                        });
+                        
+                        if (minValue !== sensor.min_threshold.toString() || maxValue !== sensor.max_threshold.toString()) {
+                          console.log(`Updating sensor ${sensor.id} thresholds`);
+                          await updateSensorThreshold(sensor.id, parseFloat(minValue), parseFloat(maxValue));
+                        }
                       }
+                      
+                      alert('Đã lưu tất cả cài đặt thành công!');
+                      setSettingsOpen(false);
+                      
+                    } catch (error) {
+                      console.error('❌ Error saving settings:', error);
+                      alert('Có lỗi khi lưu cài đặt: ' + error.message);
                     }
                   }}
                   className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
