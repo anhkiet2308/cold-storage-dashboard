@@ -121,16 +121,21 @@ useEffect(() => {
   };
 }, []);
 useEffect(() => {
-  // Auto refresh every 30 seconds
+  // Auto refresh every 10 seconds
   const autoRefresh = setInterval(() => {
     console.log('🔄 Auto refresh data');
     fetchSensors();
     fetchAlerts();
     fetchTemperatureLogs();
+    
+    // Check sensor health every refresh
+    if (sensors.length > 0) {
+      checkSensorHealth();
+    }
   }, 10000);
 
   return () => clearInterval(autoRefresh);
-}, []);
+}, [sensors.length]); // Add sensors.length as dependency
 useEffect(() => {
   // Force unlock loading sau 10 giây nếu bị stuck  
   const forceTimeout = setTimeout(() => {
@@ -427,6 +432,156 @@ const fetchUserProfile = async (userId) => {
     setChartLoading(false);
     }
   };
+
+  // Thêm sau fetchTemperatureLogs (khoảng dòng 350)
+const checkSensorHealth = async () => {
+  console.log('🏥 Checking sensor health...');
+  
+  try {
+    const now = new Date();
+    const healthThreshold = 5 * 60 * 1000; // 5 minutes in milliseconds
+    
+    // Get latest log for each sensor
+    const sensorHealthPromises = sensors.map(async (sensor) => {
+      try {
+        const response = await fetch(
+          `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?sensor_id=eq.${sensor.id}&order=logged_at.desc&limit=1`,
+          {
+            headers: {
+              'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+              'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        );
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data.length === 0) {
+          // No data ever - sensor might be new or broken
+          return {
+            sensorId: sensor.id,
+            sensorName: sensor.name,
+            status: 'no_data',
+            lastSeen: null,
+            minutesOffline: Infinity
+          };
+        }
+
+        const lastLog = data[0];
+        const lastSeen = new Date(lastLog.logged_at);
+        const timeDiff = now - lastSeen;
+        const minutesOffline = Math.floor(timeDiff / (1000 * 60));
+        
+        return {
+          sensorId: sensor.id,
+          sensorName: sensor.name,
+          status: timeDiff > healthThreshold ? 'offline' : 'online',
+          lastSeen: lastSeen,
+          minutesOffline: minutesOffline,
+          lastTemperature: lastLog.temperature
+        };
+        
+      } catch (error) {
+        console.error(`Error checking sensor ${sensor.id}:`, error);
+        return {
+          sensorId: sensor.id,
+          sensorName: sensor.name,
+          status: 'error',
+          lastSeen: null,
+          minutesOffline: Infinity
+        };
+      }
+    });
+
+    const healthResults = await Promise.all(sensorHealthPromises);
+    
+    // Update sensor status in database
+    const updatePromises = healthResults.map(async (health) => {
+      const newStatus = health.status === 'online' ? 'active' : 
+                       health.status === 'offline' ? 'warning' : 'error';
+      
+      try {
+        const { error } = await supabase
+          .from('sensors')
+          .update({ 
+            status: newStatus,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', health.sensorId);
+          
+        if (error) {
+          console.error(`Error updating sensor ${health.sensorId} status:`, error);
+        }
+      } catch (error) {
+        console.error(`Error updating sensor ${health.sensorId}:`, error);
+      }
+    });
+
+    await Promise.allSettled(updatePromises);
+    
+    // Create alerts for offline sensors
+    const offlineSensors = healthResults.filter(h => h.status === 'offline' || h.status === 'no_data');
+    
+    for (const offlineSensor of offlineSensors) {
+      try {
+        // Check if alert already exists for this sensor being offline
+        const { data: existingAlerts } = await supabase
+          .from('alerts')
+          .select('id')
+          .eq('sensor_id', offlineSensor.sensorId)
+          .eq('type', 'offline')
+          .eq('status', 'unresolved');
+        
+        if (!existingAlerts || existingAlerts.length === 0) {
+          // Create new offline alert
+          const { error: alertError } = await supabase
+            .from('alerts')
+            .insert([{
+              sensor_id: offlineSensor.sensorId,
+              type: 'offline',
+              temperature: offlineSensor.lastTemperature || null,
+              status: 'unresolved',
+              message: `Sensor ${offlineSensor.sensorName} offline for ${offlineSensor.minutesOffline} minutes`
+            }]);
+            
+          if (alertError) {
+            console.error('Error creating offline alert:', alertError);
+          } else {
+            console.log(`🚨 Created offline alert for ${offlineSensor.sensorName}`);
+            
+            // Show browser notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('Cảnh báo cảm biến offline!', {
+                body: `${offlineSensor.sensorName} đã offline ${offlineSensor.minutesOffline} phút`,
+                icon: '/favicon.ico'
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error creating offline alert for sensor ${offlineSensor.sensorId}:`, error);
+      }
+    }
+    
+    console.log('🏥 Sensor health check completed:', {
+      online: healthResults.filter(h => h.status === 'online').length,
+      offline: healthResults.filter(h => h.status === 'offline').length,
+      error: healthResults.filter(h => h.status === 'error').length,
+      no_data: healthResults.filter(h => h.status === 'no_data').length
+    });
+    
+    return healthResults;
+    
+  } catch (error) {
+    console.error('💥 Error in checkSensorHealth:', error);
+    return [];
+  }
+};
 
   const fetchSettings = async () => {
     try {
@@ -961,22 +1116,59 @@ useEffect(() => {
 };
 
   const getSensorStatusColor = (sensor) => {
-    if (!sensor) return 'bg-gray-100 text-gray-800 border-gray-200';
-    
-    if (sensor.status === 'error') return 'bg-red-100 text-red-800 border-red-200';
-    if (sensor.status === 'warning' || sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) 
-      return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-    return 'bg-green-100 text-green-800 border-green-200';
-  };
+  if (!sensor) return 'bg-gray-100 text-gray-800 border-gray-200';
+  
+  switch(sensor.status) {
+    case 'error':
+      return 'bg-red-100 text-red-800 border-red-200';
+    case 'warning':
+      return 'bg-yellow-100 text-yellow-800 border-yellow-200';  
+    case 'active':
+      // Check if temperature is within threshold
+      if (sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) {
+        return 'bg-orange-100 text-orange-800 border-orange-200';
+      }
+      return 'bg-green-100 text-green-800 border-green-200';
+    default:
+      return 'bg-gray-100 text-gray-800 border-gray-200';
+  }
+};
 
-  const getSensorCardColor = (sensor) => {
-    if (!sensor) return 'border-gray-500';
-    
-    if (sensor.status === 'error') return 'border-red-500';
-    if (sensor.status === 'warning' || sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) 
+const getSensorCardColor = (sensor) => {
+  if (!sensor) return 'border-gray-500';
+  
+  switch(sensor.status) {
+    case 'error':
+      return 'border-red-500';
+    case 'warning':
       return 'border-yellow-500';
-    return 'border-green-500';
-  };
+    case 'active':
+      if (sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) {
+        return 'border-orange-500';
+      }
+      return 'border-green-500';
+    default:
+      return 'border-gray-500';
+  }
+};
+
+const getSensorStatusText = (sensor) => {
+  if (!sensor) return 'Không xác định';
+  
+  switch(sensor.status) {
+    case 'active':
+      if (sensor.temperature > sensor.max_threshold || sensor.temperature < sensor.min_threshold) {
+        return 'Vượt ngưỡng';
+      }
+      return 'Hoạt động';
+    case 'warning':
+      return 'Mất kết nối';
+    case 'error':
+      return 'Lỗi';
+    default:
+      return 'Không xác định';
+  }
+};
 
   // Show loading screen
   if (loading) {
@@ -1143,13 +1335,13 @@ if (!user || showLogin) {
               <div className="flex justify-between items-start mb-3">
                 <h3 className="text-sm font-medium text-gray-600">{sensor.name}</h3>
                 <span className={`text-xs px-2 py-1 rounded-full border ${getSensorStatusColor(sensor)}`}>
-                  {sensor.status === 'active' ? 'Hoạt động' : sensor.status === 'warning' ? 'Cảnh báo' : 'Lỗi'}
+                  {getSensorStatusText(sensor)}
                 </span>
               </div>
               <div className="flex items-center mb-3">
                 <ThermostatIcon />
                 <span className="text-3xl font-bold text-gray-900 ml-2">
-                  {sensor.temperature ? sensor.temperature.toFixed(1) : '--'}°C
+                  {sensor.temperature ? sensor.temperature.toFixed(1) : (sensor.status === 'warning' || sensor.status === 'error' ? '--' : '0.0')}°C
                 </span>
               </div>
               <div className="flex justify-between text-xs text-gray-500">
@@ -1307,17 +1499,21 @@ if (!user || showLogin) {
                         {sensors.map((sensor, index) => {
                           if (selectedSensor === 'all' || selectedSensor === sensor.id.toString()) {
                             const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
+                            const isOffline = sensor.status === 'warning' || sensor.status === 'error';
+                            
                             return (
                               <Line 
                                 key={sensor.id}
                                 type="monotone" 
                                 dataKey={`sensor${sensor.id}`} 
                                 stroke={colors[index % colors.length]} 
-                                name={sensor.name} 
+                                name={`${sensor.name}${isOffline ? ' (Offline)' : ''}`}
                                 strokeWidth={2}
-                                connectNulls
+                                connectNulls={false} // Don't connect missing data points
                                 dot={{ r: 2 }}
                                 activeDot={{ r: 4 }}
+                                strokeDasharray={isOffline ? "5 5" : "0"} // Dashed line for offline sensors
+                                opacity={isOffline ? 0.5 : 1} // Fade offline sensors
                               />
                             );
                           }
@@ -1381,11 +1577,15 @@ if (!user || showLogin) {
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
                               <span className={`px-2 py-1 text-xs rounded-full ${
-                                alert.type === 'high'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-blue-100 text-blue-800'
+                                alert.type === 'high' ? 'bg-red-100 text-red-800' :
+                                alert.type === 'low' ? 'bg-blue-100 text-blue-800' :
+                                alert.type === 'offline' ? 'bg-gray-100 text-gray-800' :
+                                'bg-yellow-100 text-yellow-800'
                               }`}>
-                                {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                                {alert.type === 'high' ? 'Vượt ngưỡng cao' : 
+                                alert.type === 'low' ? 'Vượt ngưỡng thấp' :
+                                alert.type === 'offline' ? 'Cảm biến offline' :
+                                'Không xác định'}
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
