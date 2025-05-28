@@ -10,7 +10,6 @@ import {
   ReferenceLine,
   Line  // Thêm vào đây
 } from 'recharts';
-import { supabase } from './supabaseClient';
 import { supabase, testConnection } from './supabaseClient';
 import Login from './components/Login';
 import { exportToPDF, exportToExcel } from './utils/exportUtils';
