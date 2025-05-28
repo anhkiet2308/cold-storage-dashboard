@@ -88,21 +88,26 @@ const App = () => {
   });
 
   // THÊM useEffect này sau tất cả useState (khoảng dòng 95)
+// Improved Memory Monitor
 useEffect(() => {
   console.log('App component mounted');
   
-  // Memory monitoring
   const logMemory = () => {
     if (performance.memory) {
+      const used = Math.round(performance.memory.usedJSHeapSize / 1048576);
       console.log('Memory usage:', {
-        used: Math.round(performance.memory.usedJSHeapSize / 1048576) + ' MB',
+        used: used + ' MB',
         total: Math.round(performance.memory.totalJSHeapSize / 1048576) + ' MB',
         limit: Math.round(performance.memory.jsHeapSizeLimit / 1048576) + ' MB'
       });
+      
+      // Alert if memory too high
+      if (used > 100) {
+        console.warn('🚨 High memory usage detected:', used + 'MB');
+      }
     }
   };
 
-  // Log memory every 15 seconds
   const memoryInterval = setInterval(logMemory, 15000);
   logMemory(); // Initial log
 
@@ -562,35 +567,38 @@ useEffect(() => {
 }, []);
 
   // Temperature update interval - only when user is logged in
-  useEffect(() => {
+  // Temperature update interval - only when user is logged in
+useEffect(() => {
   let interval = null;
   let mounted = true;
+  let errorCount = 0;
 
   if (user && sensors.length > 0 && mounted) {
     console.log('Starting temperature update timer');
     
-    // Initial update với error handling
     const safeUpdate = async () => {
       if (!mounted) return;
       try {
         await updateSensorTemperature();
+        errorCount = 0; // Reset on success
       } catch (error) {
-        console.error('Timer update error:', error);
+        errorCount++;
+        console.error(`Timer update error (${errorCount}):`, error);
+        
+        // Stop timer if too many errors
+        if (errorCount >= 3) {
+          console.error('🚨 Too many timer errors, stopping updates');
+          if (interval) {
+            clearInterval(interval);
+            interval = null;
+          }
+        }
       }
     };
 
     safeUpdate(); // Initial call
 
-    // Set interval với error handling
-    interval = setInterval(async () => {
-      if (!mounted) return;
-      try {
-        await updateSensorTemperature();
-      } catch (error) {
-        console.error('Interval update error:', error);
-        // Có thể clear interval nếu lỗi liên tục
-      }
-    }, 30000);
+    interval = setInterval(safeUpdate, 30000); // Every 30 seconds
   }
 
   return () => {
