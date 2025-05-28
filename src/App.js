@@ -152,20 +152,27 @@ useEffect(() => {
       });
     }
 
+    // Clear any existing session first
     checkUser();
     
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('🔄 Auth state changed:', event, session?.user ? 'User logged in' : 'No user');
       
+      // ONLY accept fresh sign-ins, ignore recovered sessions
       if (event === 'SIGNED_IN' && session?.user) {
-        // Only set user on fresh sign in
         console.log('✅ Fresh sign in detected');
         setUser(session.user);
         await fetchUserProfile(session.user.id);
         setShowLogin(false);
+      } else if (event === 'TOKEN_REFRESHED') {
+        // Ignore token refresh - force logout
+        console.log('🚫 Token refresh ignored - forcing logout');
+        await supabase.auth.signOut();
+        setUser(null);
+        setUserProfile(null);
       } else {
-        // For any other event (including page reload), clear user
-        console.log('🚪 Clearing user state');
+        // For any other event, clear user
+        console.log('🚪 Clearing user state for event:', event);
         setUser(null);
         setUserProfile(null);
       }
@@ -177,19 +184,41 @@ useEffect(() => {
   }, []);
 
   const checkUser = async () => {
-    console.log('🔍 checkUser started - Force login on reload');
+    console.log('🔍 checkUser started - Force clear all sessions');
     try {
-      // FORCE LOGOUT ON PAGE RELOAD
-      console.log('🚪 Clearing any existing session...');
-      await supabase.auth.signOut();
+      // STEP 1: Clear all browser storage
+      console.log('🧹 Clearing all browser storage...');
+      localStorage.clear();
+      sessionStorage.clear();
       
-      // Clear any stored user data
+      // STEP 2: Clear specific Supabase storage keys
+      const keysToRemove = [
+        'sb-refresh-token',
+        'sb-access-token', 
+        'supabase.auth.token',
+        'sb-' + process.env.REACT_APP_SUPABASE_URL?.split('//')[1]?.split('.')[0] + '-auth-token'
+      ];
+      
+      keysToRemove.forEach(key => {
+        localStorage.removeItem(key);
+        sessionStorage.removeItem(key);
+      });
+      
+      // STEP 3: Force sign out from Supabase
+      console.log('🚪 Force signing out from Supabase...');
+      await supabase.auth.signOut({ scope: 'global' });
+      
+      // STEP 4: Clear React state
       setUser(null);
       setUserProfile(null);
       
-      console.log('👤 No user - require fresh login');
+      // STEP 5: Wait a bit to ensure cleanup
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.log('✅ All sessions cleared - require fresh login');
     } catch (error) {
       console.error('❌ Error in checkUser:', error.message);
+      // Even if error, clear state
       setUser(null);
       setUserProfile(null);
     } finally {
@@ -200,6 +229,8 @@ useEffect(() => {
 
 const fetchUserProfile = async (userId) => {
   try {
+    console.log('📋 Fetching profile for user:', userId);
+    
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
@@ -207,12 +238,50 @@ const fetchUserProfile = async (userId) => {
       .single();
 
     if (error) {
-      console.log('Profile not found, creating default user profile');
+      console.log('Profile not found, checking email for admin role');
+      
+      // Get user email from auth
+      const { data: { user } } = await supabase.auth.getUser();
+      const userEmail = user?.email;
+      
+      console.log('User email:', userEmail);
+      
+      // Check if admin email
+      const adminEmails = ['kietheo5@gmail.com', 'admin@abfoods.vn'];
+      const isAdmin = adminEmails.includes(userEmail);
+      
+      console.log('Is admin:', isAdmin);
+      
+      // Create default profile with correct role
+      const defaultProfile = {
+        id: userId,
+        email: userEmail,
+        role: isAdmin ? 'admin' : 'user',
+        created_at: new Date().toISOString()
+      };
+      
+      console.log('Setting default profile:', defaultProfile);
+      setUserProfile(defaultProfile);
+      
       return;
     }
+    
+    console.log('Profile found:', data);
     setUserProfile(data);
   } catch (error) {
     console.error('Error fetching profile:', error);
+    
+    // Fallback: Set basic profile based on email
+    const { data: { user } } = await supabase.auth.getUser();
+    const userEmail = user?.email;
+    const adminEmails = ['kietheo5@gmail.com', 'admin@abfoods.vn'];
+    const isAdmin = adminEmails.includes(userEmail);
+    
+    setUserProfile({
+      id: userId,
+      email: userEmail,
+      role: isAdmin ? 'admin' : 'user'
+    });
   }
 };
 
@@ -603,30 +672,33 @@ const fetchUserProfile = async (userId) => {
   };
 
   const handleLogout = async () => {
-  console.log('🚪 Logging out...');
-  try {
-    const { error } = await supabase.auth.signOut();
-    if (error) {
-      console.error('❌ Logout error:', error);
-      throw error;
+    console.log('🚪 Logging out...');
+    try {
+      // Sign out from Supabase
+      const { error } = await supabase.auth.signOut({ scope: 'global' });
+      if (error) {
+        console.error('❌ Logout error:', error);
+      }
+      
+      // Clear all storage
+      localStorage.clear();
+      sessionStorage.clear();
+      
+      // Clear React state
+      setUser(null);
+      setUserProfile(null);
+      
+      console.log('✅ Successfully logged out');
+      
+      // Force reload to ensure clean state
+      window.location.reload();
+      
+    } catch (error) {
+      console.error('❌ Error logging out:', error);
+      // Force reload anyway
+      window.location.reload();
     }
-    
-    console.log('✅ Successfully logged out');
-    setUser(null);
-    setUserProfile(null);
-    
-    // Clear any local storage
-    localStorage.clear();
-    sessionStorage.clear();
-    
-    // Show login form instead of reloading
-    setShowLogin(true);
-    
-  } catch (error) {
-    console.error('❌ Error logging out:', error);
-    alert('Lỗi khi đăng xuất: ' + error.message);
-  }
-};
+  };
 
   // Initialize data and subscriptions
   // Thay thế phần Subscribe realtime trong useEffect
@@ -804,6 +876,36 @@ useEffect(() => {
       setChartKey(prev => prev + 1);
     }
   }, [sensors]);
+
+  // Thêm useEffect này để force clear khi app khởi động
+useEffect(() => {
+  console.log('🚀 App starting - clearing all existing sessions');
+  
+  // Force clear all Supabase data on app start
+  const clearSupabaseData = async () => {
+    try {
+      // Clear localStorage patterns
+      Object.keys(localStorage).forEach(key => {
+        if (key.includes('supabase') || key.includes('sb-')) {
+          localStorage.removeItem(key);
+        }
+      });
+      
+      // Clear sessionStorage patterns  
+      Object.keys(sessionStorage).forEach(key => {
+        if (key.includes('supabase') || key.includes('sb-')) {
+          sessionStorage.removeItem(key);
+        }
+      });
+      
+      console.log('✅ Cleared all Supabase storage');
+    } catch (error) {
+      console.error('Error clearing storage:', error);
+    }
+  };
+  
+  clearSupabaseData();
+}, []); // Empty dependency - only run once on mount
 
 useEffect(() => {
   let mounted = true;
