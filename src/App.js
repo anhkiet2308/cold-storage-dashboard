@@ -462,57 +462,65 @@ const fetchUserProfile = async (userId) => {
 
   // Update functions
   const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
-    if (!user || userProfile?.role !== 'admin') {
-      alert('Chỉ admin mới có quyền thay đổi cài đặt!');
-      return false;
-    }
+  if (!user || userProfile?.role !== 'admin') {
+    console.error('❌ Permission denied: User not admin');
+    alert('Chỉ admin mới có quyền thay đổi cài đặt!');
+    return false;
+  }
 
-    console.log(`🔧 Updating sensor ${sensorId} thresholds:`, { 
-      minThreshold, 
-      maxThreshold,
-      types: { min: typeof minThreshold, max: typeof maxThreshold }
-    });
+  console.log(`🔧 updateSensorThreshold called for sensor ${sensorId}:`, { 
+    minThreshold, 
+    maxThreshold,
+    types: { min: typeof minThreshold, max: typeof maxThreshold },
+    userId: user.id,
+    userEmail: user.email,
+    userRole: userProfile?.role
+  });
+  
+  try {
+    // Use Supabase client
+    const updateData = {
+      min_threshold: Number(minThreshold),
+      max_threshold: Number(maxThreshold),
+      updated_at: new Date().toISOString()
+    };
     
-    try {
-      const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/sensors?id=eq.${sensorId}`;
-      
-      const updateData = { 
-        min_threshold: Number(minThreshold),  // Đảm bảo là số
-        max_threshold: Number(maxThreshold),  // Đảm bảo là số
-        updated_at: new Date().toISOString()
-      };
-      
-      console.log('📤 Update data:', updateData);
-      
-      const response = await fetch(urlWithFilter, {
-        method: 'PATCH',
-        headers: {
-          'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
-          'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(updateData)
+    console.log('📤 Sending update to Supabase:', updateData);
+    
+    const { data, error } = await supabase
+      .from('sensors')
+      .update(updateData)
+      .eq('id', sensorId)
+      .select();
+
+    if (error) {
+      console.error('❌ Supabase error:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint
       });
+      throw error;
+    }
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Response error:', errorText);
-        throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
-      }
-
-      console.log('✅ Sensor threshold updated successfully');
-      
-      // Delay trước khi fetch để đảm bảo database đã cập nhật
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await fetchSensors();
-      return true;
-      
-    } catch (error) {
-      console.error('❌ Error updating threshold:', error);
+    console.log('✅ Supabase update successful:', data);
+    
+    if (!data || data.length === 0) {
+      console.warn('⚠️ No rows were updated. Sensor might not exist or no permission');
       return false;
     }
-  };
+    
+    console.log('🔄 Refreshing sensors data...');
+    await fetchSensors();
+    
+    return true;
+    
+  } catch (error) {
+    console.error('💥 Error in updateSensorThreshold:', error);
+    return false;
+  }
+};
 
   const updateSettings = async () => {
     if (!user || userProfile?.role !== 'admin') {
@@ -553,9 +561,17 @@ const fetchUserProfile = async (userId) => {
     return;
   }
 
-  console.log('🔄 Resolving alert ID:', alertId);
+  console.log('🔄 Resolving alert ID:', alertId, 'User ID:', user.id);
   try {
     const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?id=eq.${alertId}`;
+    console.log('📡 Request URL:', urlWithFilter);
+    
+    const updatePayload = {
+      status: 'resolved',
+      resolved_at: new Date().toISOString(),
+      resolved_by: user.id
+    };
+    console.log('📤 Update payload:', updatePayload);
     
     const response = await fetch(urlWithFilter, {
       method: 'PATCH',
@@ -565,20 +581,23 @@ const fetchUserProfile = async (userId) => {
         'Content-Type': 'application/json',
         'Prefer': 'return=minimal'
       },
-      body: JSON.stringify({
-        status: 'resolved',
-        resolved_at: new Date().toISOString(),
-        resolved_by: user.id
-      })
+      body: JSON.stringify(updatePayload)
     });
 
+    console.log('📥 Response status:', response.status);
+    
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('❌ Response error text:', errorText);
       throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
 
     console.log('✅ Alert resolved successfully');
-    await fetchAlerts(); // Refresh alerts
+    
+    // Wait a bit then refresh
+    setTimeout(async () => {
+      await fetchAlerts();
+    }, 1000);
     
   } catch (error) {
     console.error('❌ Error resolving alert:', error);
@@ -1464,7 +1483,7 @@ useEffect(() => {
                       let errorMessages = [];
                       
                       // 1. Update general settings
-                      console.log('Updating general settings...');
+                      console.log('📧 Updating general settings...');
                       const settingsSuccess = await updateSettings();
                       if (!settingsSuccess) {
                         allSuccess = false;
@@ -1472,47 +1491,78 @@ useEffect(() => {
                       }
                       
                       // 2. Update thresholds cho từng sensor
-                      console.log('Updating sensor thresholds...');
-                      for (const sensor of sensors) {
+                      console.log('🌡️ Starting sensor threshold updates...');
+                      console.log('📊 Total sensors to update:', sensors.length);
+                      
+                      for (let i = 0; i < sensors.length; i++) {
+                        const sensor = sensors[i];
+                        console.log(`\n🔄 Processing sensor ${i + 1}/${sensors.length}: ${sensor.name} (ID: ${sensor.id})`);
+                        
                         const minElement = document.getElementById(`min-${sensor.id}`);
                         const maxElement = document.getElementById(`max-${sensor.id}`);
                         
                         if (!minElement || !maxElement) {
-                          console.warn(`Cannot find input elements for sensor ${sensor.id}`);
+                          console.error(`❌ Cannot find input elements for sensor ${sensor.id}`);
+                          console.log('🔍 Available elements with min- prefix:', 
+                            Array.from(document.querySelectorAll('[id^="min-"]')).map(el => el.id)
+                          );
+                          errorMessages.push(`Không tìm thấy input cho ${sensor.name}`);
+                          allSuccess = false;
                           continue;
                         }
                         
                         const minValue = parseFloat(minElement.value);
                         const maxValue = parseFloat(maxElement.value);
                         
-                        console.log(`Sensor ${sensor.id} values:`, {
-                          current: { min: sensor.min_threshold, max: sensor.max_threshold },
-                          new: { min: minValue, max: maxValue }
+                        console.log(`📊 Sensor ${sensor.id} (${sensor.name}):`, {
+                          currentMin: sensor.min_threshold,
+                          currentMax: sensor.max_threshold,
+                          newMin: minValue,
+                          newMax: maxValue,
+                          minElement: minElement.value,
+                          maxElement: maxElement.value
                         });
                         
                         // Validate values
                         if (isNaN(minValue) || isNaN(maxValue)) {
+                          console.error(`❌ Invalid values for sensor ${sensor.id}:`, { minValue, maxValue });
                           errorMessages.push(`Giá trị ngưỡng không hợp lệ cho ${sensor.name}`);
                           allSuccess = false;
                           continue;
                         }
                         
                         if (minValue >= maxValue) {
+                          console.error(`❌ Min >= Max for sensor ${sensor.id}:`, { minValue, maxValue });
                           errorMessages.push(`Ngưỡng thấp phải nhỏ hơn ngưỡng cao cho ${sensor.name}`);
                           allSuccess = false;
                           continue;
                         }
                         
-                        // ALWAYS update (remove the comparison check)
-                        console.log(`Updating sensor ${sensor.id} thresholds: ${minValue} to ${maxValue}`);
-                        const thresholdSuccess = await updateSensorThreshold(sensor.id, minValue, maxValue);
-                        if (!thresholdSuccess) {
+                        // Update sensor threshold
+                        console.log(`🔧 Updating sensor ${sensor.id} thresholds: ${minValue} to ${maxValue}`);
+                        
+                        try {
+                          const thresholdSuccess = await updateSensorThreshold(sensor.id, minValue, maxValue);
+                          if (thresholdSuccess) {
+                            console.log(`✅ Successfully updated sensor ${sensor.id} (${sensor.name})`);
+                          } else {
+                            console.error(`❌ Failed to update sensor ${sensor.id} (${sensor.name})`);
+                            allSuccess = false;
+                            errorMessages.push(`Lỗi cập nhật ngưỡng cho ${sensor.name}`);
+                          }
+                        } catch (error) {
+                          console.error(`💥 Exception updating sensor ${sensor.id}:`, error);
                           allSuccess = false;
-                          errorMessages.push(`Lỗi cập nhật ngưỡng cho ${sensor.name}`);
-                        } else {
-                          console.log(`✅ Successfully updated sensor ${sensor.id}`);
+                          errorMessages.push(`Lỗi exception cho ${sensor.name}: ${error.message}`);
                         }
+                        
+                        // Add delay between updates
+                        await new Promise(resolve => setTimeout(resolve, 500));
                       }
+                      
+                      console.log('\n📊 Update Summary:');
+                      console.log('✅ Success:', allSuccess);
+                      console.log('❌ Errors:', errorMessages);
                       
                       if (allSuccess) {
                         alert('✅ Đã lưu tất cả cài đặt thành công!');
@@ -1524,8 +1574,8 @@ useEffect(() => {
                       }
                       
                     } catch (error) {
-                      console.error('❌ Error saving settings:', error);
-                      alert('❌ Có lỗi khi lưu cài đặt: ' + error.message);
+                      console.error('💥 Critical error saving settings:', error);
+                      alert('❌ Có lỗi nghiêm trọng khi lưu cài đặt: ' + error.message);
                     } finally {
                       setIsLoading(false);
                     }
