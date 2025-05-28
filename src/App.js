@@ -11,6 +11,7 @@ import {
   Line  // Thêm vào đây
 } from 'recharts';
 import { supabase } from './supabaseClient';
+import { supabase, testConnection } from './supabaseClient';
 import Login from './components/Login';
 import { exportToPDF, exportToExcel } from './utils/exportUtils';
 
@@ -111,6 +112,17 @@ useEffect(() => {
     clearInterval(memoryInterval);
   };
 }, []);
+useEffect(() => {
+  // Force unlock loading sau 10 giây nếu bị stuck  
+  const forceTimeout = setTimeout(() => {
+    if (loading) {
+      console.log('🚨 FORCE UNLOCK: App stuck in loading, forcing unlock');
+      setLoading(false);
+    }
+  }, 10000);
+
+  return () => clearTimeout(forceTimeout);
+}, [loading]);
   // Check authentication
   useEffect(() => {
     
@@ -140,36 +152,41 @@ useEffect(() => {
   }, []);
 
   const checkUser = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setUser(user);
-        await fetchUserProfile(user.id);
-      }
-    } catch (error) {
-      console.error('Error checking user:', error);
-    } finally {
+  console.log('🔍 checkUser started');
+  try {
+    // Test connection first
+    console.log('🧪 Testing Supabase connection...');
+    const connectionOk = await testConnection();
+    
+    if (!connectionOk) {
+      console.log('⚠️ Supabase connection failed, running in offline mode');
       setLoading(false);
+      return;
     }
-  };
 
-  const fetchUserProfile = async (userId) => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (error) {
-        console.log('Profile not found, creating default user profile');
-        return;
-      }
-      setUserProfile(data);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
+    console.log('👤 Getting user from Supabase...');
+    const { data: { user }, error } = await supabase.auth.getUser();
+    
+    if (error) {
+      console.error('❌ Error getting user:', error.message);
+    } else {
+      console.log('👤 User result:', user ? 'User found' : 'No user');
     }
-  };
+    
+    if (user) {
+      setUser(user);
+      console.log('📋 Fetching user profile...');
+      await fetchUserProfile(user.id);
+    } else {
+      console.log('👤 No user logged in, continuing as anonymous');
+    }
+  } catch (error) {
+    console.error('❌ Error in checkUser:', error.message);
+  } finally {
+    console.log('✅ Setting loading to false');
+    setLoading(false);
+  }
+};
 
   // Fetch data functions
   const fetchSensors = async () => {
