@@ -435,7 +435,7 @@ const fetchUserProfile = async (userId) => {
 
   // Thêm sau fetchTemperatureLogs (khoảng dòng 350)
   const checkSensorHealth = async () => {
-    console.log('🏥 Checking sensor health...');
+    console.log('🏥 Checking sensor health with dual verification...');
     
     if (sensors.length === 0) {
       console.log('⚠️ No sensors available for health check');
@@ -444,7 +444,7 @@ const fetchUserProfile = async (userId) => {
     
     try {
       const now = new Date();
-      const healthThreshold = 3 * 60 * 1000; // 3 minutes
+      const healthThreshold = 5 * 60 * 1000; // 5 minutes - reasonable threshold
       
       const healthResults = [];
       
@@ -452,8 +452,8 @@ const fetchUserProfile = async (userId) => {
         try {
           console.log(`🔍 Checking sensor ${sensor.id} (${sensor.name})...`);
           
-          // Get latest temperature log
-          const response = await fetch(
+          // CHECK 1: Last temperature log
+          const logsResponse = await fetch(
             `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?sensor_id=eq.${sensor.id}&order=logged_at.desc&limit=1`,
             {
               headers: {
@@ -464,32 +464,65 @@ const fetchUserProfile = async (userId) => {
             }
           );
 
-          if (!response.ok) continue;
-
-          const data = await response.json();
+          let logCheck = { isOffline: true, minutesAgo: Infinity, reason: 'No logs found' };
           
-          let isOffline = false;
-          let minutesOffline = 0;
-          
-          if (data.length === 0) {
-            isOffline = true;
-            minutesOffline = Infinity;
-          } else {
-            const lastLog = data[0];
-            const lastSeen = new Date(lastLog.logged_at);
-            const timeDiff = now - lastSeen;
-            minutesOffline = Math.floor(timeDiff / (1000 * 60));
-            isOffline = timeDiff > healthThreshold;
+          if (logsResponse.ok) {
+            const logsData = await logsResponse.json();
+            
+            if (logsData.length > 0) {
+              const lastLog = logsData[0];
+              const lastLogTime = new Date(lastLog.logged_at);
+              const logTimeDiff = now - lastLogTime;
+              const logMinutesAgo = Math.floor(logTimeDiff / (1000 * 60));
+              
+              logCheck = {
+                isOffline: logTimeDiff > healthThreshold,
+                minutesAgo: logMinutesAgo,
+                reason: logTimeDiff > healthThreshold ? 'Log too old' : 'Log OK',
+                lastLogTime: lastLogTime.toISOString()
+              };
+            }
           }
           
-          console.log(`📊 Sensor ${sensor.name}: ${isOffline ? 'OFFLINE' : 'ONLINE'} (${minutesOffline} min ago)`);
+          // CHECK 2: Sensor updated_at
+          const sensorUpdateTime = new Date(sensor.updated_at);
+          const sensorTimeDiff = now - sensorUpdateTime;
+          const sensorMinutesAgo = Math.floor(sensorTimeDiff / (1000 * 60));
+          
+          const sensorCheck = {
+            isOffline: sensorTimeDiff > healthThreshold,
+            minutesAgo: sensorMinutesAgo,
+            reason: sensorTimeDiff > healthThreshold ? 'Sensor not updated' : 'Sensor OK',
+            lastUpdateTime: sensorUpdateTime.toISOString()
+          };
+          
+          // FINAL DECISION: Offline if EITHER check fails
+          const isOffline = logCheck.isOffline || sensorCheck.isOffline;
+          const offlineReasons = [];
+          
+          if (logCheck.isOffline) offlineReasons.push(`Data: ${logCheck.reason} (${logCheck.minutesAgo}min ago)`);
+          if (sensorCheck.isOffline) offlineReasons.push(`Update: ${sensorCheck.reason} (${sensorCheck.minutesAgo}min ago)`);
+          
+          console.log(`📊 Sensor ${sensor.name}:`, {
+            status: isOffline ? '🔴 OFFLINE' : '🟢 ONLINE',
+            logCheck: logCheck,
+            sensorCheck: sensorCheck,
+            reasons: offlineReasons
+          });
           
           // Update sensor status in database
           const newStatus = isOffline ? 'warning' : 'active';
-          await supabase
+          const { error: updateError } = await supabase
             .from('sensors')
-            .update({ status: newStatus })
+            .update({ 
+              status: newStatus,
+              updated_at: new Date().toISOString() // Update timestamp
+            })
             .eq('id', sensor.id);
+            
+          if (updateError) {
+            console.error(`❌ Error updating sensor ${sensor.id} status:`, updateError);
+          }
           
           // Create offline alert if needed
           if (isOffline) {
@@ -498,30 +531,50 @@ const fetchUserProfile = async (userId) => {
               .from('alerts')
               .select('id')
               .eq('sensor_id', sensor.id)
-              .eq('type', 'offline')
+              .is('temperature', null) // null temperature = offline alert
               .eq('status', 'unresolved');
             
             if (!existingAlerts || existingAlerts.length === 0) {
               console.log(`🚨 Creating offline alert for ${sensor.name}`);
               
-              const { error } = await supabase
+              const { error: alertError } = await supabase
                 .from('alerts')
                 .insert([{
                   sensor_id: sensor.id,
-                  type: 'offline',
-                  temperature: null,
+                  temperature: null, // null = offline alert
                   status: 'unresolved'
                 }]);
                 
-              if (!error) {
-                // Show notification
+              if (!alertError) {
+                console.log(`✅ Created offline alert for ${sensor.name}`);
+                
+                // Show browser notification
                 if ('Notification' in window && Notification.permission === 'granted') {
                   new Notification('⚠️ Cảm biến offline!', {
-                    body: `${sensor.name} đã mất kết nối`,
+                    body: `${sensor.name} đã mất kết nối\n${offlineReasons.join(', ')}`,
                     icon: '/favicon.ico'
                   });
                 }
+              } else {
+                console.error(`❌ Error creating offline alert:`, alertError);
               }
+            } else {
+              console.log(`ℹ️ Offline alert already exists for sensor ${sensor.id}`);
+            }
+          } else {
+            // Sensor is online - resolve any existing offline alerts
+            const { error: resolveError } = await supabase
+              .from('alerts')
+              .update({ 
+                status: 'resolved',
+                resolved_at: new Date().toISOString()
+              })
+              .eq('sensor_id', sensor.id)
+              .is('temperature', null)
+              .eq('status', 'unresolved');
+              
+            if (!resolveError) {
+              console.log(`✅ Auto-resolved offline alerts for ${sensor.name}`);
             }
           }
           
@@ -529,27 +582,40 @@ const fetchUserProfile = async (userId) => {
             sensorId: sensor.id,
             sensorName: sensor.name,
             status: isOffline ? 'offline' : 'online',
-            minutesOffline
+            logCheck,
+            sensorCheck,
+            reasons: offlineReasons
           });
           
         } catch (error) {
-          console.error(`Error checking sensor ${sensor.id}:`, error);
+          console.error(`💥 Error checking sensor ${sensor.id}:`, error);
+          
+          // Treat errors as offline
+          healthResults.push({
+            sensorId: sensor.id,
+            sensorName: sensor.name,
+            status: 'error',
+            error: error.message
+          });
         }
       }
       
-      console.log('🏥 Health check completed:', {
+      const summary = {
+        total: healthResults.length,
         online: healthResults.filter(h => h.status === 'online').length,
-        offline: healthResults.filter(h => h.status === 'offline').length
-      });
+        offline: healthResults.filter(h => h.status === 'offline').length,
+        error: healthResults.filter(h => h.status === 'error').length
+      };
       
-      // Refresh data
-      await fetchSensors();
-      await fetchAlerts();
+      console.log('🏥 Health check completed:', summary);
+      
+      // Refresh data to show updates
+      await Promise.all([fetchSensors(), fetchAlerts()]);
       
       return healthResults;
       
     } catch (error) {
-      console.error('💥 Error in checkSensorHealth:', error);
+      console.error('💥 Critical error in checkSensorHealth:', error);
       return [];
     }
   };
