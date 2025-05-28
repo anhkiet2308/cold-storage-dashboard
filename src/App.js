@@ -434,154 +434,125 @@ const fetchUserProfile = async (userId) => {
   };
 
   // Thêm sau fetchTemperatureLogs (khoảng dòng 350)
-const checkSensorHealth = async () => {
-  console.log('🏥 Checking sensor health...');
-  
-  try {
-    const now = new Date();
-    const healthThreshold = 5 * 60 * 1000; // 5 minutes in milliseconds
+  const checkSensorHealth = async () => {
+    console.log('🏥 Checking sensor health...');
     
-    // Get latest log for each sensor
-    const sensorHealthPromises = sensors.map(async (sensor) => {
-      try {
-        const response = await fetch(
-          `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?sensor_id=eq.${sensor.id}&order=logged_at.desc&limit=1`,
-          {
-            headers: {
-              'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
-              'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        );
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        
-        if (data.length === 0) {
-          // No data ever - sensor might be new or broken
-          return {
-            sensorId: sensor.id,
-            sensorName: sensor.name,
-            status: 'no_data',
-            lastSeen: null,
-            minutesOffline: Infinity
-          };
-        }
-
-        const lastLog = data[0];
-        const lastSeen = new Date(lastLog.logged_at);
-        const timeDiff = now - lastSeen;
-        const minutesOffline = Math.floor(timeDiff / (1000 * 60));
-        
-        return {
-          sensorId: sensor.id,
-          sensorName: sensor.name,
-          status: timeDiff > healthThreshold ? 'offline' : 'online',
-          lastSeen: lastSeen,
-          minutesOffline: minutesOffline,
-          lastTemperature: lastLog.temperature
-        };
-        
-      } catch (error) {
-        console.error(`Error checking sensor ${sensor.id}:`, error);
-        return {
-          sensorId: sensor.id,
-          sensorName: sensor.name,
-          status: 'error',
-          lastSeen: null,
-          minutesOffline: Infinity
-        };
-      }
-    });
-
-    const healthResults = await Promise.all(sensorHealthPromises);
-    
-    // Update sensor status in database
-    const updatePromises = healthResults.map(async (health) => {
-      const newStatus = health.status === 'online' ? 'active' : 
-                       health.status === 'offline' ? 'warning' : 'error';
-      
-      try {
-        const { error } = await supabase
-          .from('sensors')
-          .update({ 
-            status: newStatus,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', health.sensorId);
-          
-        if (error) {
-          console.error(`Error updating sensor ${health.sensorId} status:`, error);
-        }
-      } catch (error) {
-        console.error(`Error updating sensor ${health.sensorId}:`, error);
-      }
-    });
-
-    await Promise.allSettled(updatePromises);
-    
-    // Create alerts for offline sensors
-    const offlineSensors = healthResults.filter(h => h.status === 'offline' || h.status === 'no_data');
-    
-    for (const offlineSensor of offlineSensors) {
-      try {
-        // Check if alert already exists for this sensor being offline
-        const { data: existingAlerts } = await supabase
-          .from('alerts')
-          .select('id')
-          .eq('sensor_id', offlineSensor.sensorId)
-          .eq('type', 'offline')
-          .eq('status', 'unresolved');
-        
-        if (!existingAlerts || existingAlerts.length === 0) {
-          // Create new offline alert
-          const { error: alertError } = await supabase
-            .from('alerts')
-            .insert([{
-              sensor_id: offlineSensor.sensorId,
-              type: 'offline',
-              temperature: offlineSensor.lastTemperature || null,
-              status: 'unresolved',
-              message: `Sensor ${offlineSensor.sensorName} offline for ${offlineSensor.minutesOffline} minutes`
-            }]);
-            
-          if (alertError) {
-            console.error('Error creating offline alert:', alertError);
-          } else {
-            console.log(`🚨 Created offline alert for ${offlineSensor.sensorName}`);
-            
-            // Show browser notification
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('Cảnh báo cảm biến offline!', {
-                body: `${offlineSensor.sensorName} đã offline ${offlineSensor.minutesOffline} phút`,
-                icon: '/favicon.ico'
-              });
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`Error creating offline alert for sensor ${offlineSensor.sensorId}:`, error);
-      }
+    if (sensors.length === 0) {
+      console.log('⚠️ No sensors available for health check');
+      return [];
     }
     
-    console.log('🏥 Sensor health check completed:', {
-      online: healthResults.filter(h => h.status === 'online').length,
-      offline: healthResults.filter(h => h.status === 'offline').length,
-      error: healthResults.filter(h => h.status === 'error').length,
-      no_data: healthResults.filter(h => h.status === 'no_data').length
-    });
-    
-    return healthResults;
-    
-  } catch (error) {
-    console.error('💥 Error in checkSensorHealth:', error);
-    return [];
-  }
-};
+    try {
+      const now = new Date();
+      const healthThreshold = 3 * 60 * 1000; // 3 minutes
+      
+      const healthResults = [];
+      
+      for (const sensor of sensors) {
+        try {
+          console.log(`🔍 Checking sensor ${sensor.id} (${sensor.name})...`);
+          
+          // Get latest temperature log
+          const response = await fetch(
+            `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?sensor_id=eq.${sensor.id}&order=logged_at.desc&limit=1`,
+            {
+              headers: {
+                'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+
+          if (!response.ok) continue;
+
+          const data = await response.json();
+          
+          let isOffline = false;
+          let minutesOffline = 0;
+          
+          if (data.length === 0) {
+            isOffline = true;
+            minutesOffline = Infinity;
+          } else {
+            const lastLog = data[0];
+            const lastSeen = new Date(lastLog.logged_at);
+            const timeDiff = now - lastSeen;
+            minutesOffline = Math.floor(timeDiff / (1000 * 60));
+            isOffline = timeDiff > healthThreshold;
+          }
+          
+          console.log(`📊 Sensor ${sensor.name}: ${isOffline ? 'OFFLINE' : 'ONLINE'} (${minutesOffline} min ago)`);
+          
+          // Update sensor status in database
+          const newStatus = isOffline ? 'warning' : 'active';
+          await supabase
+            .from('sensors')
+            .update({ status: newStatus })
+            .eq('id', sensor.id);
+          
+          // Create offline alert if needed
+          if (isOffline) {
+            // Check if offline alert already exists
+            const { data: existingAlerts } = await supabase
+              .from('alerts')
+              .select('id')
+              .eq('sensor_id', sensor.id)
+              .eq('type', 'offline')
+              .eq('status', 'unresolved');
+            
+            if (!existingAlerts || existingAlerts.length === 0) {
+              console.log(`🚨 Creating offline alert for ${sensor.name}`);
+              
+              const { error } = await supabase
+                .from('alerts')
+                .insert([{
+                  sensor_id: sensor.id,
+                  type: 'offline',
+                  temperature: null,
+                  status: 'unresolved'
+                }]);
+                
+              if (!error) {
+                // Show notification
+                if ('Notification' in window && Notification.permission === 'granted') {
+                  new Notification('⚠️ Cảm biến offline!', {
+                    body: `${sensor.name} đã mất kết nối`,
+                    icon: '/favicon.ico'
+                  });
+                }
+              }
+            }
+          }
+          
+          healthResults.push({
+            sensorId: sensor.id,
+            sensorName: sensor.name,
+            status: isOffline ? 'offline' : 'online',
+            minutesOffline
+          });
+          
+        } catch (error) {
+          console.error(`Error checking sensor ${sensor.id}:`, error);
+        }
+      }
+      
+      console.log('🏥 Health check completed:', {
+        online: healthResults.filter(h => h.status === 'online').length,
+        offline: healthResults.filter(h => h.status === 'offline').length
+      });
+      
+      // Refresh data
+      await fetchSensors();
+      await fetchAlerts();
+      
+      return healthResults;
+      
+    } catch (error) {
+      console.error('💥 Error in checkSensorHealth:', error);
+      return [];
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -1259,15 +1230,22 @@ if (!user || showLogin) {
                             <div className="flex justify-between items-start">
                               <div className="flex-1">
                                 <p className="text-sm font-medium text-gray-900">
-                                  {alert.sensor} - {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                                  {alert.sensor} - {alert.type === 'offline' 
+                                    ? 'Mất kết nối' 
+                                    : `${alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C`
+                                  }
                                 </p>
                                 <p className="text-xs text-gray-500">{alert.time}</p>
                                 <span className={`inline-block px-2 py-1 text-xs rounded-full mt-1 ${
-                                  alert.type === 'high'
-                                    ? 'bg-red-100 text-red-800'
-                                    : 'bg-blue-100 text-blue-800'
+                                  alert.type === 'high' ? 'bg-red-100 text-red-800' :
+                                  alert.type === 'low' ? 'bg-blue-100 text-blue-800' :
+                                  alert.type === 'offline' ? 'bg-gray-100 text-gray-800' :
+                                  'bg-yellow-100 text-yellow-800'
                                 }`}>
-                                  {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                                  {alert.type === 'high' ? 'Vượt ngưỡng cao' : 
+                                  alert.type === 'low' ? 'Vượt ngưỡng thấp' :
+                                  alert.type === 'offline' ? 'Cảm biến offline' :
+                                  'Không xác định'}
                                 </span>
                               </div>
                               <span className={`text-xs px-2 py-1 rounded-full ${
@@ -1589,7 +1567,10 @@ if (!user || showLogin) {
                               </span>
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                              {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                              {alert.type === 'offline' 
+                                ? 'N/A' 
+                                : `${alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature || '--'}°C`
+                              }
                             </td>
                             <td className="px-6 py-4 whitespace-nowrap">
                               <span className={`px-2 py-1 text-xs rounded-full ${
