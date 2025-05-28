@@ -144,7 +144,6 @@ useEffect(() => {
 }, [loading]);
   // Check authentication
   useEffect(() => {
-    
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.getRegistrations().then(function(registrations) {
         for(let registration of registrations) {
@@ -158,14 +157,17 @@ useEffect(() => {
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log('🔄 Auth state changed:', event, session?.user ? 'User logged in' : 'No user');
       
-      if (session?.user) {
+      if (event === 'SIGNED_IN' && session?.user) {
+        // Only set user on fresh sign in
+        console.log('✅ Fresh sign in detected');
         setUser(session.user);
         await fetchUserProfile(session.user.id);
-        setShowLogin(false); // Đảm bảo ẩn login form
+        setShowLogin(false);
       } else {
+        // For any other event (including page reload), clear user
+        console.log('🚪 Clearing user state');
         setUser(null);
         setUserProfile(null);
-        // Không tự động hiện login form ở đây
       }
     });
 
@@ -175,41 +177,26 @@ useEffect(() => {
   }, []);
 
   const checkUser = async () => {
-  console.log('🔍 checkUser started');
-  try {
-    // Test connection first
-    //console.log('🧪 Testing Supabase connection...');
-    //const connectionOk = await testConnection();
-    
-    //if (!connectionOk) {
-    //  console.log('⚠️ Supabase connection failed, running in offline mode');
-    //  setLoading(false);
-    //  return;
-   // }
-
-    console.log('👤 Getting user from Supabase...');
-    const { data: { user }, error } = await supabase.auth.getUser();
-    
-    if (error) {
-      console.error('❌ Error getting user:', error.message);
-    } else {
-      console.log('👤 User result:', user ? 'User found' : 'No user');
+    console.log('🔍 checkUser started - Force login on reload');
+    try {
+      // FORCE LOGOUT ON PAGE RELOAD
+      console.log('🚪 Clearing any existing session...');
+      await supabase.auth.signOut();
+      
+      // Clear any stored user data
+      setUser(null);
+      setUserProfile(null);
+      
+      console.log('👤 No user - require fresh login');
+    } catch (error) {
+      console.error('❌ Error in checkUser:', error.message);
+      setUser(null);
+      setUserProfile(null);
+    } finally {
+      console.log('✅ Setting loading to false - will show login');
+      setLoading(false);
     }
-    
-    if (user) {
-      setUser(user);
-      console.log('📋 Fetching user profile...');
-      await fetchUserProfile(user.id);
-    } else {
-      console.log('👤 No user logged in, continuing as anonymous');
-    }
-  } catch (error) {
-    console.error('❌ Error in checkUser:', error.message);
-  } finally {
-    console.log('✅ Setting loading to false');
-    setLoading(false);
-  }
-};
+  };
 
 const fetchUserProfile = async (userId) => {
   try {
@@ -628,11 +615,12 @@ const fetchUserProfile = async (userId) => {
     setUser(null);
     setUserProfile(null);
     
-    // Clear any local storage if needed
-    localStorage.removeItem('supabase.auth.token');
+    // Clear any local storage
+    localStorage.clear();
+    sessionStorage.clear();
     
-    // Reload page to ensure clean state
-    window.location.reload();
+    // Show login form instead of reloading
+    setShowLogin(true);
     
   } catch (error) {
     console.error('❌ Error logging out:', error);
@@ -901,12 +889,16 @@ useEffect(() => {
   }
 
   // Show login screen if requested
-  if (!user || showLogin) {
-    return <Login onLogin={(user) => {
-      setUser(user);
-      setShowLogin(false);
-    }} />;
-  }
+  // Show login screen if requested
+if (!user || showLogin) {
+  return <Login onLogin={async (user) => {
+    console.log('🔑 Login successful:', user.email);
+    setUser(user);
+    setShowLogin(false);
+    // Fetch user profile after login
+    await fetchUserProfile(user.id);
+  }} />;
+}
 
   // Main dashboard - accessible to everyone
   return (
