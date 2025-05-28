@@ -87,6 +87,30 @@ const App = () => {
     notification_phones: ['+84123456789']
   });
 
+  // THÊM useEffect này sau tất cả useState (khoảng dòng 95)
+useEffect(() => {
+  console.log('App component mounted');
+  
+  // Memory monitoring
+  const logMemory = () => {
+    if (performance.memory) {
+      console.log('Memory usage:', {
+        used: Math.round(performance.memory.usedJSHeapSize / 1048576) + ' MB',
+        total: Math.round(performance.memory.totalJSHeapSize / 1048576) + ' MB',
+        limit: Math.round(performance.memory.jsHeapSizeLimit / 1048576) + ' MB'
+      });
+    }
+  };
+
+  // Log memory every 15 seconds
+  const memoryInterval = setInterval(logMemory, 15000);
+  logMemory(); // Initial log
+
+  return () => {
+    console.log('App component unmounted');
+    clearInterval(memoryInterval);
+  };
+}, []);
   // Check authentication
   useEffect(() => {
     
@@ -415,100 +439,176 @@ const App = () => {
   // Initialize data and subscriptions
   // Thay thế phần Subscribe realtime trong useEffect
 useEffect(() => {
-  // Always fetch data, even for anonymous users
-  fetchSensors();
-  fetchAlerts();
-  fetchSettings();
-  fetchTemperatureLogs();
+  let mounted = true;
+  let sensorsChannel = null;
+  let alertsChannel = null;
+  let logsChannel = null;
 
-  // Request notification permission
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
+  const setupChannels = async () => {
+    if (!mounted) return;
 
-  // Subscribe to realtime changes với error handling
-  const sensorsChannel = supabase
-    .channel('public:sensors')
-    .on('postgres_changes', 
-      { event: '*', schema: 'public', table: 'sensors' },
-      (payload) => {
-        console.log('Sensors change:', payload);
-        fetchSensors();
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Sensors channel subscribed');
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error('Sensors channel error');
-      }
-    });
+    try {
+      // Always fetch data first
+      await Promise.all([
+        fetchSensors(),
+        fetchAlerts(), 
+        fetchSettings(),
+        fetchTemperatureLogs()
+      ]);
 
-  const alertsChannel = supabase
-    .channel('public:alerts')
-    .on('postgres_changes',
-      { event: '*', schema: 'public', table: 'alerts' },
-      (payload) => {
-        console.log('Alerts change:', payload);
-        fetchAlerts();
+      // Request notification permission
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
       }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Alerts channel subscribed');
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error('Alerts channel error');
-      }
-    });
 
-  const logsChannel = supabase
-    .channel('public:temperature_logs')
-    .on('postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'temperature_logs' },
-      (payload) => {
-        console.log('Logs change:', payload);
-        fetchTemperatureLogs();
-      }
-    )
-    .subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Temperature logs channel subscribed');
-      } else if (status === 'CHANNEL_ERROR') {
-        console.error('Temperature logs channel error');
-      }
-    });
+      if (!mounted) return;
+
+      // Setup channels với better error handling
+      sensorsChannel = supabase
+        .channel('sensors-channel')
+        .on('postgres_changes', 
+          { event: '*', schema: 'public', table: 'sensors' },
+          (payload) => {
+            if (!mounted) return;
+            console.log('Sensors change:', payload);
+            fetchSensors().catch(err => console.error('Fetch sensors error:', err));
+          }
+        )
+        .subscribe((status) => {
+          if (!mounted) return;
+          console.log('Sensors channel status:', status);
+        });
+
+      alertsChannel = supabase
+        .channel('alerts-channel')
+        .on('postgres_changes',
+          { event: '*', schema: 'public', table: 'alerts' },
+          (payload) => {
+            if (!mounted) return;
+            console.log('Alerts change:', payload);
+            fetchAlerts().catch(err => console.error('Fetch alerts error:', err));
+          }
+        )
+        .subscribe((status) => {
+          if (!mounted) return;
+          console.log('Alerts channel status:', status);
+        });
+
+      logsChannel = supabase
+        .channel('logs-channel')
+        .on('postgres_changes',
+          { event: 'INSERT', schema: 'public', table: 'temperature_logs' },
+          (payload) => {
+            if (!mounted) return;
+            console.log('Logs change:', payload);
+            fetchTemperatureLogs().catch(err => console.error('Fetch logs error:', err));
+          }
+        )
+        .subscribe((status) => {
+          if (!mounted) return;
+          console.log('Temperature logs channel status:', status);
+        });
+
+    } catch (error) {
+      console.error('Error setting up channels:', error);
+    }
+  };
+
+  setupChannels();
 
   return () => {
-    // Cleanup với error handling
-    Promise.all([
-      sensorsChannel.unsubscribe(),
-      alertsChannel.unsubscribe(),
-      logsChannel.unsubscribe()
-    ]).catch(error => {
-      console.error('Error unsubscribing channels:', error);
-    });
+    console.log('Cleaning up channels...');
+    mounted = false;
+    
+    const cleanup = async () => {
+      try {
+        const unsubscribePromises = [];
+        
+        if (sensorsChannel) {
+          unsubscribePromises.push(sensorsChannel.unsubscribe());
+        }
+        if (alertsChannel) {
+          unsubscribePromises.push(alertsChannel.unsubscribe());
+        }
+        if (logsChannel) {
+          unsubscribePromises.push(logsChannel.unsubscribe());
+        }
+
+        await Promise.allSettled(unsubscribePromises);
+        console.log('All channels cleaned up');
+      } catch (error) {
+        console.error('Error cleaning up channels:', error);
+      }
+    };
+
+    cleanup();
   };
 }, []);
 
   // Temperature update interval - only when user is logged in
   useEffect(() => {
-    if (user && sensors.length > 0) {
-      // Initial update
-      updateSensorTemperature();
-      
-      // Update every 30 seconds
-      const interval = setInterval(() => {
-        updateSensorTemperature();
-      }, 30000);
+  let interval = null;
+  let mounted = true;
 
-      return () => clearInterval(interval);
+  if (user && sensors.length > 0 && mounted) {
+    console.log('Starting temperature update timer');
+    
+    // Initial update với error handling
+    const safeUpdate = async () => {
+      if (!mounted) return;
+      try {
+        await updateSensorTemperature();
+      } catch (error) {
+        console.error('Timer update error:', error);
+      }
+    };
+
+    safeUpdate(); // Initial call
+
+    // Set interval với error handling
+    interval = setInterval(async () => {
+      if (!mounted) return;
+      try {
+        await updateSensorTemperature();
+      } catch (error) {
+        console.error('Interval update error:', error);
+        // Có thể clear interval nếu lỗi liên tục
+      }
+    }, 30000);
+  }
+
+  return () => {
+    mounted = false;
+    if (interval) {
+      console.log('Clearing temperature update timer');
+      clearInterval(interval);
+      interval = null;
     }
-  }, [user, sensors.length]);
+  };
+}, [user, sensors.length]);
 
   // Fetch temperature logs when timeRange changes
-  useEffect(() => {
-    fetchTemperatureLogs();
-  }, [timeRange]);
+  // THAY THẾ useEffect này (dòng 520-522)
+useEffect(() => {
+  let mounted = true;
+  
+  const fetchLogs = async () => {
+    if (!mounted) return;
+    try {
+      await fetchTemperatureLogs();
+    } catch (error) {
+      console.error('Error fetching temperature logs:', error);
+    }
+  };
+
+  // Debounce để tránh gọi liên tục
+  const timeoutId = setTimeout(fetchLogs, 300);
+  
+  return () => {
+    mounted = false;
+    clearTimeout(timeoutId);
+  };
+}, [timeRange]);
 
   const fetchWithRetry = async (fetchFunction, retries = 3) => {
   for (let i = 0; i < retries; i++) {
@@ -1060,7 +1160,7 @@ useEffect(() => {
                     for (const sensor of sensors) {
                       const minValue = document.getElementById(`min-${sensor.id}`).value;
                       const maxValue = document.getElementById(`max-${sensor.id}`).value;
-                      if (minValue !== sensor.min_threshold || maxValue !== sensor.max_threshold) {
+                      if (minValue !== sensor.min_threshold.toString() || maxValue !== sensor.max_threshold.toString()) {
                         await updateSensorThreshold(sensor.id, parseFloat(minValue), parseFloat(maxValue));
                       }
                     }
