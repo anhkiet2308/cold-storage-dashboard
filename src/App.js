@@ -285,58 +285,74 @@ const fetchUserProfile = async (userId) => {
 };
 
   const fetchTemperatureLogs = async () => {
-  console.log('🔍 fetchTemperatureLogs called (using fetch)');
-  try {
-    const timeRangeHours = {
-      '1h': 1,
-      '6h': 6,
-      '24h': 24,
-      '7d': 168,
-      '30d': 720
-    };
-    
-    const fromDate = new Date();
-    fromDate.setHours(fromDate.getHours() - timeRangeHours[timeRange]);
-
-    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?select=*&logged_at=gte.${fromDate.toISOString()}&order=logged_at.asc`, {
-      headers: {
-        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-    console.log('📈 Temperature logs received:', data);
-    
-    // Group by hour for chart (giữ nguyên logic cũ)
-    const chartPoints = {};
-    data?.forEach(log => {
-      const date = new Date(log.logged_at);
-      const hourKey = `${date.getHours()}:00`;
+    console.log('🔍 fetchTemperatureLogs called (using fetch)');
+    try {
+      const timeRangeHours = {
+        '1h': 1,
+        '6h': 6,
+        '24h': 24,
+        '7d': 168,
+        '30d': 720
+      };
       
-      if (!chartPoints[hourKey]) {
-        chartPoints[hourKey] = { time: hourKey };
+      const fromDate = new Date();
+      fromDate.setHours(fromDate.getHours() - timeRangeHours[timeRange]);
+
+      const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?select=*&logged_at=gte.${fromDate.toISOString()}&order=logged_at.asc`, {
+        headers: {
+          'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-      chartPoints[hourKey][`sensor${log.sensor_id}`] = log.temperature;
-    });
-    
-    const chartArray = Object.values(chartPoints).sort((a, b) => {
-      const hourA = parseInt(a.time.split(':')[0]);
-      const hourB = parseInt(b.time.split(':')[0]);
-      return hourA - hourB;
-    });
-    
-    setChartData(chartArray);
-    setTemperatureLogs(data || []);
-  } catch (error) {
-    console.error('💥 Error fetching temperature logs:', error);
-  }
-};
+
+      const data = await response.json();
+      console.log('📈 Temperature logs received:', data);
+      
+      // Improved grouping with higher resolution
+      const chartPoints = {};
+      const groupingMinutes = timeRange === '1h' ? 5 : 
+                            timeRange === '6h' ? 15 : 
+                            timeRange === '24h' ? 60 : 
+                            timeRange === '7d' ? 360 : 1440; // 6 hours for 7d, 1 day for 30d
+      
+      data?.forEach(log => {
+        const date = new Date(log.logged_at);
+        // Group by specific time intervals for better resolution
+        const roundedMinutes = Math.floor(date.getMinutes() / groupingMinutes) * groupingMinutes;
+        const groupKey = `${date.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
+        const dayKey = date.toDateString();
+        const fullKey = timeRange === '7d' || timeRange === '30d' ? 
+                        `${dayKey} ${groupKey}` : groupKey;
+        
+        if (!chartPoints[fullKey]) {
+          chartPoints[fullKey] = { 
+            time: timeRange === '7d' || timeRange === '30d' ? 
+                  `${date.getDate()}/${date.getMonth() + 1} ${groupKey}` : groupKey,
+            timestamp: date.getTime()
+          };
+        }
+        chartPoints[fullKey][`sensor${log.sensor_id}`] = log.temperature;
+      });
+      
+      const chartArray = Object.values(chartPoints)
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .map(point => {
+          const { timestamp, ...rest } = point;
+          return rest;
+        });
+      
+      console.log('📊 Chart data points:', chartArray.length);
+      setChartData(chartArray);
+      setTemperatureLogs(data || []);
+    } catch (error) {
+      console.error('💥 Error fetching temperature logs:', error);
+    }
+  };
 
   const fetchSettings = async () => {
     try {
@@ -462,11 +478,13 @@ const fetchUserProfile = async (userId) => {
       }
 
       console.log('✅ Sensor threshold updated successfully');
-      await fetchSensors(); // Refresh sensors
+      // Force refresh để thấy thay đổi ngay
+      await fetchSensors();
       return true;
       
     } catch (error) {
       console.error('❌ Error updating threshold:', error);
+      alert('Lỗi khi cập nhật ngưỡng: ' + error.message);
       return false;
     }
   };
@@ -738,6 +756,14 @@ useEffect(() => {
     document.removeEventListener('mousedown', handleClickOutside);
   };
 }, [showNotifications]);
+
+useEffect(() => {
+    // Re-fetch chart data when sensors change to update reference lines
+    if (sensors.length > 0) {
+      console.log('📊 Sensors updated, refreshing chart...');
+      fetchTemperatureLogs();
+    }
+  }, [sensors]);
 
 useEffect(() => {
   let mounted = true;
@@ -1059,11 +1085,52 @@ useEffect(() => {
                       <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="time" />
-                        <YAxis domain={[-35, -10]} />
+                        <YAxis domain={['dataMin - 5', 'dataMax + 5']} />
                         <Tooltip />
                         <Legend />
-                        <ReferenceLine y={-15} stroke="red" strokeDasharray="5 5" label="Ngưỡng cao" />
-                        <ReferenceLine y={-30} stroke="blue" strokeDasharray="5 5" label="Ngưỡng thấp" />
+                        
+                        {/* Dynamic Reference Lines based on selected sensor or all sensors */}
+                        {selectedSensor === 'all' ? (
+                          // Show reference lines for all sensors (use average or most common thresholds)
+                          sensors.length > 0 && (
+                            <>
+                              <ReferenceLine 
+                                y={Math.max(...sensors.map(s => s.max_threshold))} 
+                                stroke="red" 
+                                strokeDasharray="5 5" 
+                                label="Ngưỡng cao tối đa" 
+                              />
+                              <ReferenceLine 
+                                y={Math.min(...sensors.map(s => s.min_threshold))} 
+                                stroke="blue" 
+                                strokeDasharray="5 5" 
+                                label="Ngưỡng thấp tối thiểu" 
+                              />
+                            </>
+                          )
+                        ) : (
+                          // Show reference lines for specific sensor
+                          (() => {
+                            const sensor = sensors.find(s => s.id.toString() === selectedSensor);
+                            return sensor ? (
+                              <>
+                                <ReferenceLine 
+                                  y={sensor.max_threshold} 
+                                  stroke="red" 
+                                  strokeDasharray="5 5" 
+                                  label={`${sensor.name} - Ngưỡng cao (${sensor.max_threshold}°C)`} 
+                                />
+                                <ReferenceLine 
+                                  y={sensor.min_threshold} 
+                                  stroke="blue" 
+                                  strokeDasharray="5 5" 
+                                  label={`${sensor.name} - Ngưỡng thấp (${sensor.min_threshold}°C)`} 
+                                />
+                              </>
+                            ) : null;
+                          })()
+                        )}
+                        
                         {sensors.map((sensor, index) => {
                           if (selectedSensor === 'all' || selectedSensor === sensor.id.toString()) {
                             const colors = ['#ef4444', '#3b82f6', '#eab308', '#10b981'];
@@ -1076,6 +1143,8 @@ useEffect(() => {
                                 name={sensor.name} 
                                 strokeWidth={2}
                                 connectNulls
+                                dot={{ r: 3 }}
+                                activeDot={{ r: 5 }}
                               />
                             );
                           }
@@ -1370,6 +1439,7 @@ useEffect(() => {
                       let errorMessages = [];
                       
                       // 1. Update general settings
+                      console.log('Updating general settings...');
                       const settingsSuccess = await updateSettings();
                       if (!settingsSuccess) {
                         allSuccess = false;
@@ -1377,6 +1447,7 @@ useEffect(() => {
                       }
                       
                       // 2. Update thresholds cho từng sensor
+                      console.log('Updating sensor thresholds...');
                       for (const sensor of sensors) {
                         const minElement = document.getElementById(`min-${sensor.id}`);
                         const maxElement = document.getElementById(`max-${sensor.id}`);
@@ -1388,6 +1459,11 @@ useEffect(() => {
                         
                         const minValue = parseFloat(minElement.value);
                         const maxValue = parseFloat(maxElement.value);
+                        
+                        console.log(`Sensor ${sensor.id} values:`, {
+                          current: { min: sensor.min_threshold, max: sensor.max_threshold },
+                          new: { min: minValue, max: maxValue }
+                        });
                         
                         // Validate values
                         if (isNaN(minValue) || isNaN(maxValue)) {
@@ -1402,20 +1478,22 @@ useEffect(() => {
                           continue;
                         }
                         
-                        // Only update if values actually changed
-                        if (minValue !== sensor.min_threshold || maxValue !== sensor.max_threshold) {
-                          console.log(`Updating sensor ${sensor.id} thresholds`);
-                          const thresholdSuccess = await updateSensorThreshold(sensor.id, minValue, maxValue);
-                          if (!thresholdSuccess) {
-                            allSuccess = false;
-                            errorMessages.push(`Lỗi cập nhật ngưỡng cho ${sensor.name}`);
-                          }
+                        // ALWAYS update (remove the comparison check)
+                        console.log(`Updating sensor ${sensor.id} thresholds: ${minValue} to ${maxValue}`);
+                        const thresholdSuccess = await updateSensorThreshold(sensor.id, minValue, maxValue);
+                        if (!thresholdSuccess) {
+                          allSuccess = false;
+                          errorMessages.push(`Lỗi cập nhật ngưỡng cho ${sensor.name}`);
+                        } else {
+                          console.log(`✅ Successfully updated sensor ${sensor.id}`);
                         }
                       }
                       
                       if (allSuccess) {
                         alert('✅ Đã lưu tất cả cài đặt thành công!');
                         setSettingsOpen(false);
+                        // Force refresh all data
+                        await Promise.all([fetchSensors(), fetchAlerts()]);
                       } else {
                         alert('⚠️ Một số cài đặt không được lưu:\n' + errorMessages.join('\n'));
                       }
