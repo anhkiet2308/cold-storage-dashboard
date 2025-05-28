@@ -13,7 +13,7 @@ import {
 import { supabase, testConnection } from './supabaseClient';
 import Login from './components/Login';
 import { exportToPDF, exportToExcel } from './utils/exportUtils';
-
+const DEBUG_SCHEMA = true;
 // Icons
 const ThermostatIcon = () => (
   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -246,6 +246,11 @@ const fetchUserProfile = async (userId) => {
     const data = await response.json();
     console.log('📊 Sensors data received:', data);
     
+    if (DEBUG_SCHEMA && data.length > 0) {
+      console.log('🔍 SENSOR COLUMNS:', Object.keys(data[0]));
+      console.log('🔍 FIRST SENSOR:', data[0]);
+    }
+
     setSensors(data || []);
     setLastUpdate(new Date());
     
@@ -255,34 +260,40 @@ const fetchUserProfile = async (userId) => {
 };
 
   const fetchAlerts = async () => {
-  console.log('🔍 fetchAlerts called (using fetch)');
-  try {
-    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?select=*&order=created_at.desc&limit=50`, {
-      headers: {
-        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json'
+    console.log('🔍 fetchAlerts called (using fetch)');
+    try {
+      const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?select=*&order=created_at.desc&limit=50`, {
+        headers: {
+          'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-    });
 
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      const data = await response.json();
+      console.log('🚨 Alerts data received:', data);
+      
+      if (DEBUG_SCHEMA && data.length > 0) {
+      console.log('🔍 ALERT COLUMNS:', Object.keys(data[0]));
+      console.log('🔍 FIRST ALERT:', data[0]);
+      }
+
+      // Check column names match database
+      const transformedData = data ? data.map(alert => ({
+        ...alert,
+        time: new Date(alert.created_at).toLocaleString('vi-VN'),
+        sensor: sensors.find(s => s.id === alert.sensor_id)?.name || `Sensor ${alert.sensor_id}`
+      })) : [];
+      
+      setAlertHistory(transformedData);
+    } catch (error) {
+      console.error('💥 Error fetching alerts:', error);
     }
-
-    const data = await response.json();
-    console.log('🚨 Alerts data received:', data);
-    
-    const transformedData = data ? data.map(alert => ({
-      ...alert,
-      time: new Date(alert.created_at).toLocaleString('vi-VN'),
-      sensor: sensors.find(s => s.id === alert.sensor_id)?.name || `Sensor ${alert.sensor_id}`
-    })) : [];
-    
-    setAlertHistory(transformedData);
-  } catch (error) {
-    console.error('💥 Error fetching alerts:', error);
-  }
-};
+  };
 
   const fetchTemperatureLogs = async () => {
     console.log('🔍 fetchTemperatureLogs called (using fetch)');
@@ -376,75 +387,78 @@ const fetchUserProfile = async (userId) => {
 
   // Update sensor temperature and check thresholds
   const updateSensorTemperature = async () => {
-  if (!user) return;
-  
-  try {
-    const updatePromises = sensors.map(async (sensor) => {
-      try {
-        const variation = (Math.random() - 0.5) * 0.5;
-        const newTemp = Number((sensor.temperature + variation).toFixed(1));
-        
-        // Update sensor temperature
-        const { error: updateError } = await supabase
-          .from('sensors')
-          .update({ 
-            temperature: newTemp,
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', sensor.id);
-        
-        if (updateError) throw updateError;
-        
-        // Log temperature
-        const { error: logError } = await supabase
-          .from('temperature_logs')
-          .insert([{ 
-            sensor_id: sensor.id, 
-            temperature: newTemp 
-          }]);
+    if (!user) return;
+    
+    try {
+      const updatePromises = sensors.map(async (sensor) => {
+        try {
+          const variation = (Math.random() - 0.5) * 0.5;
+          const newTemp = Number((sensor.temperature + variation).toFixed(1));
           
-        if (logError) throw logError;
-        
-        // Check thresholds and create alert
-        if (newTemp > sensor.max_threshold || newTemp < sensor.min_threshold) {
-          const { error: alertError } = await supabase
-            .from('alerts')
-            .insert([{
-              sensor_id: sensor.id,
-              type: newTemp > sensor.max_threshold ? 'high' : 'low',
+          // Update sensor temperature
+          const { error: updateError } = await supabase
+            .from('sensors')
+            .update({ 
               temperature: newTemp,
-              status: 'unresolved'
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', sensor.id);
+          
+          if (updateError) throw updateError;
+          
+          // Log temperature
+          const { error: logError } = await supabase
+            .from('temperature_logs')
+            .insert([{ 
+              sensor_id: sensor.id, 
+              temperature: newTemp 
             }]);
             
-          if (alertError) throw alertError;
+          if (logError) throw logError;
           
-          // Show browser notification
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Cảnh báo nhiệt độ!', {
-              body: `${sensor.name}: ${newTemp}°C - ${newTemp > sensor.max_threshold ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}`,
-              icon: '/favicon.ico'
-            });
+          // Check thresholds and create alert - ĐÚNG TÊN CỘT
+          if (newTemp > sensor.max_threshold || newTemp < sensor.min_threshold) {
+            const { error: alertError } = await supabase
+              .from('alerts')
+              .insert([{
+                sensor_id: sensor.id,  // ĐÚNG: sensor_id không phải sensors_id
+                type: newTemp > sensor.max_threshold ? 'high' : 'low',
+                temperature: newTemp,
+                status: 'unresolved'
+              }]);
+              
+            if (alertError) {
+              console.error('Alert insert error:', alertError);
+              throw alertError;
+            }
+            
+            // Show browser notification
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('Cảnh báo nhiệt độ!', {
+                body: `${sensor.name}: ${newTemp}°C - ${newTemp > sensor.max_threshold ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}`,
+                icon: '/favicon.ico'
+              });
+            }
           }
+          
+          return { success: true, sensorId: sensor.id };
+        } catch (error) {
+          console.error(`Error updating sensor ${sensor.id}:`, error);
+          return { success: false, sensorId: sensor.id, error };
         }
-        
-        return { success: true, sensorId: sensor.id };
-      } catch (error) {
-        console.error(`Error updating sensor ${sensor.id}:`, error);
-        return { success: false, sensorId: sensor.id, error };
-      }
-    });
+      });
 
-    const results = await Promise.allSettled(updatePromises);
-    const failures = results.filter(r => r.status === 'rejected' || !r.value?.success);
-    
-    if (failures.length > 0) {
-      console.warn(`${failures.length} sensor updates failed`);
+      const results = await Promise.allSettled(updatePromises);
+      const failures = results.filter(r => r.status === 'rejected' || !r.value?.success);
+      
+      if (failures.length > 0) {
+        console.warn(`${failures.length} sensor updates failed`);
+      }
+      
+    } catch (error) {
+      console.error('Error in updateSensorTemperature:', error);
     }
-    
-  } catch (error) {
-    console.error('Error in updateSensorTemperature:', error);
-  }
-};
+  };
 
   // Update functions
   const updateSensorThreshold = async (sensorId, minThreshold, maxThreshold) => {
@@ -453,9 +467,22 @@ const fetchUserProfile = async (userId) => {
       return false;
     }
 
-    console.log(`🔧 Updating sensor ${sensorId} thresholds:`, { minThreshold, maxThreshold });
+    console.log(`🔧 Updating sensor ${sensorId} thresholds:`, { 
+      minThreshold, 
+      maxThreshold,
+      types: { min: typeof minThreshold, max: typeof maxThreshold }
+    });
+    
     try {
       const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/sensors?id=eq.${sensorId}`;
+      
+      const updateData = { 
+        min_threshold: Number(minThreshold),  // Đảm bảo là số
+        max_threshold: Number(maxThreshold),  // Đảm bảo là số
+        updated_at: new Date().toISOString()
+      };
+      
+      console.log('📤 Update data:', updateData);
       
       const response = await fetch(urlWithFilter, {
         method: 'PATCH',
@@ -465,26 +492,24 @@ const fetchUserProfile = async (userId) => {
           'Content-Type': 'application/json',
           'Prefer': 'return=minimal'
         },
-        body: JSON.stringify({ 
-          min_threshold: parseFloat(minThreshold),
-          max_threshold: parseFloat(maxThreshold),
-          updated_at: new Date().toISOString()
-        })
+        body: JSON.stringify(updateData)
       });
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error('❌ Response error:', errorText);
         throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
       }
 
       console.log('✅ Sensor threshold updated successfully');
-      // Force refresh để thấy thay đổi ngay
+      
+      // Delay trước khi fetch để đảm bảo database đã cập nhật
+      await new Promise(resolve => setTimeout(resolve, 500));
       await fetchSensors();
       return true;
       
     } catch (error) {
       console.error('❌ Error updating threshold:', error);
-      alert('Lỗi khi cập nhật ngưỡng: ' + error.message);
       return false;
     }
   };
