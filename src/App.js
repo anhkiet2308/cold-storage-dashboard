@@ -89,6 +89,8 @@ const App = () => {
     notification_phones: ['+84123456789']
   });
 
+  const [chartKey, setChartKey] = useState(0);
+  const [chartLoading, setChartLoading] = useState(false);
   // THÊM useEffect này sau tất cả useState (khoảng dòng 95)
 // Improved Memory Monitor
 useEffect(() => {
@@ -297,6 +299,7 @@ const fetchUserProfile = async (userId) => {
 
   const fetchTemperatureLogs = async () => {
     console.log('🔍 fetchTemperatureLogs called (using fetch)');
+    setChartLoading(true);
     try {
       const timeRangeHours = {
         '1h': 1,
@@ -362,6 +365,10 @@ const fetchUserProfile = async (userId) => {
       setTemperatureLogs(data || []);
     } catch (error) {
       console.error('💥 Error fetching temperature logs:', error);
+    }
+    finally {
+    // THÊM DÒNG NÀY
+    setChartLoading(false);
     }
   };
 
@@ -556,54 +563,53 @@ const fetchUserProfile = async (userId) => {
     }
   };
   const resolveAlert = async (alertId) => {
-  if (!user || userProfile?.role !== 'admin') {
-    alert('Chỉ admin mới có quyền xử lý cảnh báo!');
-    return;
-  }
-
-  console.log('🔄 Resolving alert ID:', alertId, 'User ID:', user.id);
-  try {
-    const urlWithFilter = `${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?id=eq.${alertId}`;
-    console.log('📡 Request URL:', urlWithFilter);
-    
-    const updatePayload = {
-      status: 'resolved',
-      resolved_at: new Date().toISOString(),
-      resolved_by: user.id
-    };
-    console.log('📤 Update payload:', updatePayload);
-    
-    const response = await fetch(urlWithFilter, {
-      method: 'PATCH',
-      headers: {
-        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify(updatePayload)
-    });
-
-    console.log('📥 Response status:', response.status);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Response error text:', errorText);
-      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+    if (!user || userProfile?.role !== 'admin') {
+      alert('Chỉ admin mới có quyền xử lý cảnh báo!');
+      return;
     }
 
-    console.log('✅ Alert resolved successfully');
-    
-    // Wait a bit then refresh
-    setTimeout(async () => {
+    console.log('🔄 Resolving alert ID:', alertId, 'User ID:', user.id);
+    try {
+      // TRY USING SUPABASE CLIENT INSTEAD OF FETCH
+      console.log('📤 Using Supabase client to resolve alert...');
+      
+      const { data, error } = await supabase
+        .from('alerts')
+        .update({
+          status: 'resolved',
+          resolved_at: new Date().toISOString(),
+          resolved_by: user.id
+        })
+        .eq('id', alertId)
+        .select();
+
+      if (error) {
+        console.error('❌ Supabase error:', error);
+        console.error('❌ Error details:', {
+          message: error.message,
+          code: error.code,
+          details: error.details,
+          hint: error.hint
+        });
+        throw error;
+      }
+
+      console.log('✅ Alert resolved successfully:', data);
+      
+      if (!data || data.length === 0) {
+        console.warn('⚠️ No rows were updated. Alert might not exist or no permission');
+        alert('Không thể cập nhật cảnh báo. Có thể alert không tồn tại hoặc không có quyền.');
+        return;
+      }
+      
+      // Refresh alerts immediately
       await fetchAlerts();
-    }, 1000);
-    
-  } catch (error) {
-    console.error('❌ Error resolving alert:', error);
-    alert('Lỗi khi xử lý cảnh báo: ' + error.message);
-  }
-};
+      
+    } catch (error) {
+      console.error('❌ Error resolving alert:', error);
+      alert('Lỗi khi xử lý cảnh báo: ' + error.message);
+    }
+  };
 
   const handleLogin = () => {
     setShowLogin(true);
@@ -806,6 +812,8 @@ useEffect(() => {
     if (sensors.length > 0) {
       console.log('📊 Sensors updated, refreshing chart...');
       fetchTemperatureLogs();
+      // Force chart re-render
+      setChartKey(prev => prev + 1);
     }
   }, [sensors]);
 
@@ -1123,9 +1131,15 @@ useEffect(() => {
                   </select>
                 </div>
 
-                <div className="h-96">
+                <div className="h-96 relative">
+                  {chartLoading && (
+                    <div className="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center z-10">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                      <span className="ml-2 text-gray-600">Đang tải biểu đồ...</span>
+                    </div>
+                  )}
                   {chartData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" key={chartKey}>
                       <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                         <CartesianGrid strokeDasharray="3 3" />
                         <XAxis dataKey="time" />
@@ -1133,47 +1147,68 @@ useEffect(() => {
                         <Tooltip />
                         <Legend />
                         
-                        {/* Dynamic Reference Lines based on selected sensor or all sensors */}
-                        {selectedSensor === 'all' ? (
-                          // Show reference lines for all sensors (use average or most common thresholds)
-                          sensors.length > 0 && (
-                            <>
-                              <ReferenceLine 
-                                y={Math.max(...sensors.map(s => s.max_threshold))} 
-                                stroke="red" 
-                                strokeDasharray="5 5" 
-                                label="Ngưỡng cao tối đa" 
-                              />
-                              <ReferenceLine 
-                                y={Math.min(...sensors.map(s => s.min_threshold))} 
-                                stroke="blue" 
-                                strokeDasharray="5 5" 
-                                label="Ngưỡng thấp tối thiểu" 
-                              />
-                            </>
-                          )
-                        ) : (
-                          // Show reference lines for specific sensor
-                          (() => {
+                        {/* Dynamic Reference Lines with debugging */}
+                        {(() => {
+                          console.log('🔍 Rendering reference lines...', {
+                            selectedSensor,
+                            sensorsCount: sensors.length,
+                            sensors: sensors.map(s => ({ id: s.id, name: s.name, min: s.min_threshold, max: s.max_threshold }))
+                          });
+                          
+                          if (selectedSensor === 'all') {
+                            if (sensors.length > 0) {
+                              const maxThreshold = Math.max(...sensors.map(s => s.max_threshold));
+                              const minThreshold = Math.min(...sensors.map(s => s.min_threshold));
+                              console.log('📏 All sensors reference lines:', { minThreshold, maxThreshold });
+                              
+                              return (
+                                <>
+                                  <ReferenceLine 
+                                    y={maxThreshold} 
+                                    stroke="red" 
+                                    strokeDasharray="5 5" 
+                                    label={{ value: `Ngưỡng cao: ${maxThreshold}°C`, position: "topRight" }}
+                                  />
+                                  <ReferenceLine 
+                                    y={minThreshold} 
+                                    stroke="blue" 
+                                    strokeDasharray="5 5" 
+                                    label={{ value: `Ngưỡng thấp: ${minThreshold}°C`, position: "bottomRight" }}
+                                  />
+                                </>
+                              );
+                            }
+                          } else {
                             const sensor = sensors.find(s => s.id.toString() === selectedSensor);
-                            return sensor ? (
-                              <>
-                                <ReferenceLine 
-                                  y={sensor.max_threshold} 
-                                  stroke="red" 
-                                  strokeDasharray="5 5" 
-                                  label={`${sensor.name} - Ngưỡng cao (${sensor.max_threshold}°C)`} 
-                                />
-                                <ReferenceLine 
-                                  y={sensor.min_threshold} 
-                                  stroke="blue" 
-                                  strokeDasharray="5 5" 
-                                  label={`${sensor.name} - Ngưỡng thấp (${sensor.min_threshold}°C)`} 
-                                />
-                              </>
-                            ) : null;
-                          })()
-                        )}
+                            if (sensor) {
+                              console.log('📏 Single sensor reference lines:', {
+                                sensor: sensor.name,
+                                min: sensor.min_threshold,
+                                max: sensor.max_threshold
+                              });
+                              
+                              return (
+                                <>
+                                  <ReferenceLine 
+                                    y={sensor.max_threshold} 
+                                    stroke="red" 
+                                    strokeDasharray="5 5" 
+                                    label={{ value: `${sensor.name} - Cao: ${sensor.max_threshold}°C`, position: "topRight" }}
+                                  />
+                                  <ReferenceLine 
+                                    y={sensor.min_threshold} 
+                                    stroke="blue" 
+                                    strokeDasharray="5 5" 
+                                    label={{ value: `${sensor.name} - Thấp: ${sensor.min_threshold}°C`, position: "bottomRight" }}
+                                  />
+                                </>
+                              );
+                            }
+                          }
+                          
+                          console.log('⚠️ No reference lines rendered');
+                          return null;
+                        })()}
                         
                         {sensors.map((sensor, index) => {
                           if (selectedSensor === 'all' || selectedSensor === sensor.id.toString()) {
@@ -1187,8 +1222,8 @@ useEffect(() => {
                                 name={sensor.name} 
                                 strokeWidth={2}
                                 connectNulls
-                                dot={{ r: 3 }}
-                                activeDot={{ r: 5 }}
+                                dot={{ r: 2 }}
+                                activeDot={{ r: 4 }}
                               />
                             );
                           }
@@ -1198,8 +1233,8 @@ useEffect(() => {
                     </ResponsiveContainer>
                   ) : (
                     <div className="h-full flex items-center justify-center text-gray-500">
-                      Không có dữ liệu trong khoảng thời gian này
-                    </div>
+                    {chartLoading ? 'Đang tải dữ liệu biểu đồ...' : 'Không có dữ liệu trong khoảng thời gian này'}
+                  </div>
                   )}
                 </div>
               </div>
