@@ -31,10 +31,20 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 });
 
 // Test connection function
+// Test connection function
 export const testConnection = async () => {
   try {
     console.log('🧪 Testing Supabase connection...');
-    const { data, error } = await supabase.from('sensors').select('count').limit(1);
+    
+    // Add timeout để tránh hang
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), 5000)
+    );
+    
+    const connectionPromise = supabase.from('sensors').select('count').limit(1);
+    
+    const { data, error } = await Promise.race([connectionPromise, timeoutPromise]);
+    
     if (error) {
       console.error('❌ Supabase connection failed:', error.message);
       return false;

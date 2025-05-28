@@ -159,14 +159,14 @@ useEffect(() => {
   console.log('🔍 checkUser started');
   try {
     // Test connection first
-    console.log('🧪 Testing Supabase connection...');
-    const connectionOk = await testConnection();
+    //console.log('🧪 Testing Supabase connection...');
+    //const connectionOk = await testConnection();
     
-    if (!connectionOk) {
-      console.log('⚠️ Supabase connection failed, running in offline mode');
-      setLoading(false);
-      return;
-    }
+    //if (!connectionOk) {
+    //  console.log('⚠️ Supabase connection failed, running in offline mode');
+    //  setLoading(false);
+    //  return;
+   // }
 
     console.log('👤 Getting user from Supabase...');
     const { data: { user }, error } = await supabase.auth.getUser();
