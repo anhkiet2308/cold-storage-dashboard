@@ -238,73 +238,88 @@ const fetchUserProfile = async (userId) => {
 };
 
   const fetchAlerts = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('alerts')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
+  console.log('🔍 fetchAlerts called (using fetch)');
+  try {
+    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?select=*&order=created_at.desc&limit=50`, {
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-      if (error) throw error;
-      
-      const transformedData = data ? data.map(alert => ({
-        ...alert,
-        time: new Date(alert.created_at).toLocaleString('vi-VN'),
-        sensor: sensors.find(s => s.id === alert.sensor_id)?.name || `Sensor ${alert.sensor_id}`
-      })) : [];
-      
-      setAlertHistory(transformedData);
-    } catch (error) {
-      console.error('Error fetching alerts:', error);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-  };
+
+    const data = await response.json();
+    console.log('🚨 Alerts data received:', data);
+    
+    const transformedData = data ? data.map(alert => ({
+      ...alert,
+      time: new Date(alert.created_at).toLocaleString('vi-VN'),
+      sensor: sensors.find(s => s.id === alert.sensor_id)?.name || `Sensor ${alert.sensor_id}`
+    })) : [];
+    
+    setAlertHistory(transformedData);
+  } catch (error) {
+    console.error('💥 Error fetching alerts:', error);
+  }
+};
 
   const fetchTemperatureLogs = async () => {
-    try {
-      const timeRangeHours = {
-        '1h': 1,
-        '6h': 6,
-        '24h': 24,
-        '7d': 168,
-        '30d': 720
-      };
-      
-      const fromDate = new Date();
-      fromDate.setHours(fromDate.getHours() - timeRangeHours[timeRange]);
+  console.log('🔍 fetchTemperatureLogs called (using fetch)');
+  try {
+    const timeRangeHours = {
+      '1h': 1,
+      '6h': 6,
+      '24h': 24,
+      '7d': 168,
+      '30d': 720
+    };
+    
+    const fromDate = new Date();
+    fromDate.setHours(fromDate.getHours() - timeRangeHours[timeRange]);
 
-      const { data, error } = await supabase
-        .from('temperature_logs')
-        .select('*')
-        .gte('logged_at', fromDate.toISOString())
-        .order('logged_at', { ascending: true });
+    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/temperature_logs?select=*&logged_at=gte.${fromDate.toISOString()}&order=logged_at.asc`, {
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
 
-      if (error) throw error;
-      
-      // Group by hour for chart
-      const chartPoints = {};
-      data?.forEach(log => {
-        const date = new Date(log.logged_at);
-        const hourKey = `${date.getHours()}:00`;
-        
-        if (!chartPoints[hourKey]) {
-          chartPoints[hourKey] = { time: hourKey };
-        }
-        chartPoints[hourKey][`sensor${log.sensor_id}`] = log.temperature;
-      });
-      
-      // Convert to array and sort
-      const chartArray = Object.values(chartPoints).sort((a, b) => {
-        const hourA = parseInt(a.time.split(':')[0]);
-        const hourB = parseInt(b.time.split(':')[0]);
-        return hourA - hourB;
-      });
-      
-      setChartData(chartArray);
-      setTemperatureLogs(data || []);
-    } catch (error) {
-      console.error('Error fetching temperature logs:', error);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
-  };
+
+    const data = await response.json();
+    console.log('📈 Temperature logs received:', data);
+    
+    // Group by hour for chart (giữ nguyên logic cũ)
+    const chartPoints = {};
+    data?.forEach(log => {
+      const date = new Date(log.logged_at);
+      const hourKey = `${date.getHours()}:00`;
+      
+      if (!chartPoints[hourKey]) {
+        chartPoints[hourKey] = { time: hourKey };
+      }
+      chartPoints[hourKey][`sensor${log.sensor_id}`] = log.temperature;
+    });
+    
+    const chartArray = Object.values(chartPoints).sort((a, b) => {
+      const hourA = parseInt(a.time.split(':')[0]);
+      const hourB = parseInt(b.time.split(':')[0]);
+      return hourA - hourB;
+    });
+    
+    setChartData(chartArray);
+    setTemperatureLogs(data || []);
+  } catch (error) {
+    console.error('💥 Error fetching temperature logs:', error);
+  }
+};
 
   const fetchSettings = async () => {
     try {
