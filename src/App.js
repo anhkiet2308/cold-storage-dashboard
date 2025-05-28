@@ -58,6 +58,7 @@ const LogoutIcon = () => (
   </svg>
 );
 
+
 const App = () => {
   
   // Authentication state
@@ -77,6 +78,7 @@ const App = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
   const [chartData, setChartData] = useState([]);
+  const [showNotifications, setShowNotifications] = useState(false);
   
   // Settings state
   const [settings, setSettings] = useState({
@@ -115,6 +117,17 @@ useEffect(() => {
     console.log('App component unmounted');
     clearInterval(memoryInterval);
   };
+}, []);
+useEffect(() => {
+  // Auto refresh every 30 seconds
+  const autoRefresh = setInterval(() => {
+    console.log('🔄 Auto refresh data');
+    fetchSensors();
+    fetchAlerts();
+    fetchTemperatureLogs();
+  }, 10000);
+
+  return () => clearInterval(autoRefresh);
 }, []);
 useEffect(() => {
   // Force unlock loading sau 10 giây nếu bị stuck  
@@ -445,46 +458,67 @@ const fetchUserProfile = async (userId) => {
       return;
     }
 
+    console.log('⚙️ Updating settings...');
     try {
-      const { error } = await supabase
-        .from('settings')
-        .update({
+      const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/settings?id=eq.1`, {
+        method: 'PATCH',
+        headers: {
+          'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+          'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({
           ...settings,
           updated_at: new Date().toISOString()
         })
-        .eq('id', 1);
+      });
 
-      if (error) throw error;
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       alert('Cập nhật cài đặt thành công!');
       setSettingsOpen(false);
     } catch (error) {
-      console.error('Error updating settings:', error);
+      console.error('❌ Error updating settings:', error);
       alert('Lỗi khi cập nhật cài đặt!');
     }
   };
-
   const resolveAlert = async (alertId) => {
-    if (!user || userProfile?.role !== 'admin') {
-      alert('Chỉ admin mới có quyền xử lý cảnh báo!');
-      return;
+  if (!user || userProfile?.role !== 'admin') {
+    alert('Chỉ admin mới có quyền xử lý cảnh báo!');
+    return;
+  }
+
+  console.log('🔄 Resolving alert:', alertId);
+  try {
+    const response = await fetch(`${process.env.REACT_APP_SUPABASE_URL}/rest/v1/alerts?id=eq.${alertId}`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': process.env.REACT_APP_SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${process.env.REACT_APP_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal'
+      },
+      body: JSON.stringify({
+        status: 'resolved',
+        resolved_at: new Date().toISOString(),
+        resolved_by: user.id
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    try {
-      const { error } = await supabase
-        .from('alerts')
-        .update({ 
-          status: 'resolved',
-          resolved_at: new Date().toISOString(),
-          resolved_by: user.id
-        })
-        .eq('id', alertId);
-
-      if (error) throw error;
-      await fetchAlerts();
-    } catch (error) {
-      console.error('Error resolving alert:', error);
-    }
-  };
+    console.log('✅ Alert resolved successfully');
+    await fetchAlerts(); // Refresh alerts
+  } catch (error) {
+    console.error('❌ Error resolving alert:', error);
+    alert('Lỗi khi xử lý cảnh báo!');
+  }
+};
 
   const handleLogin = () => {
     setShowLogin(true);
@@ -654,8 +688,19 @@ useEffect(() => {
   };
 }, [user, sensors.length]);
 
-  // Fetch temperature logs when timeRange changes
-  // THAY THẾ useEffect này (dòng 520-522)
+useEffect(() => {
+  const handleClickOutside = (event) => {
+    if (showNotifications && !event.target.closest('.relative')) {
+      setShowNotifications(false);
+    }
+  };
+
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => {
+    document.removeEventListener('mousedown', handleClickOutside);
+  };
+}, [showNotifications]);
+
 useEffect(() => {
   let mounted = true;
   
@@ -740,7 +785,7 @@ useEffect(() => {
   }
 
   // Show login screen if requested
-  if (showLogin && !user) {
+  if (!user || showLogin) {
     return <Login onLogin={(user) => {
       setUser(user);
       setShowLogin(false);
@@ -782,13 +827,73 @@ useEffect(() => {
                 </button>
               )}
               <div className="relative">
-                <button className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50" title="Thông báo">
+                <button 
+                  onClick={() => setShowNotifications(!showNotifications)}
+                  className="p-2 rounded-lg bg-white border border-gray-200 hover:bg-gray-50" 
+                  title="Thông báo"
+                >
                   <BellIcon />
                 </button>
                 {alertHistory.filter(a => a.status === 'unresolved').length > 0 && (
                   <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
                     {alertHistory.filter(a => a.status === 'unresolved').length}
                   </span>
+                )}
+                
+                {/* THÊM NOTIFICATION POPUP */}
+                {showNotifications && (
+                  <div className="absolute right-0 top-12 w-80 bg-white rounded-lg shadow-lg border border-gray-200 z-50">
+                    <div className="p-4 border-b border-gray-200">
+                      <h3 className="font-medium text-gray-900">Thông báo ({alertHistory.length})</h3>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      {alertHistory.length === 0 ? (
+                        <div className="p-4 text-center text-gray-500">
+                          Không có thông báo
+                        </div>
+                      ) : (
+                        alertHistory.slice(0, 10).map((alert) => (
+                          <div key={alert.id} className="p-3 border-b border-gray-100 hover:bg-gray-50">
+                            <div className="flex justify-between items-start">
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-gray-900">
+                                  {alert.sensor} - {alert.temperature?.toFixed ? alert.temperature.toFixed(1) : alert.temperature}°C
+                                </p>
+                                <p className="text-xs text-gray-500">{alert.time}</p>
+                                <span className={`inline-block px-2 py-1 text-xs rounded-full mt-1 ${
+                                  alert.type === 'high'
+                                    ? 'bg-red-100 text-red-800'
+                                    : 'bg-blue-100 text-blue-800'
+                                }`}>
+                                  {alert.type === 'high' ? 'Vượt ngưỡng cao' : 'Vượt ngưỡng thấp'}
+                                </span>
+                              </div>
+                              <span className={`text-xs px-2 py-1 rounded-full ${
+                                alert.status === 'resolved'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-yellow-100 text-yellow-800'
+                              }`}>
+                                {alert.status === 'resolved' ? '✓' : '!'}
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                    {alertHistory.length > 10 && (
+                      <div className="p-3 text-center border-t border-gray-200">
+                        <button 
+                          onClick={() => {
+                            setActiveTab('alerts');
+                            setShowNotifications(false);
+                          }}
+                          className="text-sm text-blue-600 hover:text-blue-800"
+                        >
+                          Xem tất cả ({alertHistory.length})
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
               {user ? (
@@ -820,14 +925,6 @@ useEffect(() => {
           </div>
         )}
 
-        {/* Alert for anonymous users */}
-        {!user && (
-          <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <p className="text-sm text-blue-800">
-              Bạn đang xem ở chế độ khách. <button onClick={handleLogin} className="font-medium underline">Đăng nhập</button> để có thể cập nhật dữ liệu và truy cập đầy đủ tính năng.
-            </p>
-          </div>
-        )}
 
         {/* Sensor Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -960,9 +1057,9 @@ useEffect(() => {
             {/* Alerts Tab */}
             {activeTab === 'alerts' && (
               <div>
-                <div className="overflow-x-auto">
+                <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-lg">
                   <table className="min-w-full divide-y divide-gray-200">
-                    <thead>
+                    <thead className="bg-gray-50 sticky top-0">
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                           Thời gian
@@ -989,13 +1086,13 @@ useEffect(() => {
                     <tbody className="bg-white divide-y divide-gray-200">
                       {alertHistory.length === 0 ? (
                         <tr>
-                          <td colSpan={user && userProfile?.role === 'admin' ? 6 : 5} className="px-6 py-4 text-center text-gray-500">
+                          <td colSpan={user && userProfile?.role === 'admin' ? 6 : 5} className="px-6 py-8 text-center text-gray-500">
                             Không có cảnh báo
                           </td>
                         </tr>
                       ) : (
                         alertHistory.map((alert) => (
-                          <tr key={alert.id}>
+                          <tr key={alert.id} className="hover:bg-gray-50">
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                               {alert.time}
                             </td>
@@ -1028,9 +1125,9 @@ useEffect(() => {
                                 <button
                                   onClick={() => resolveAlert(alert.id)}
                                   disabled={alert.status === 'resolved'}
-                                  className="text-blue-600 hover:text-blue-900 disabled:text-gray-400 disabled:cursor-not-allowed"
+                                  className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-xs"
                                 >
-                                  Xác nhận
+                                  {alert.status === 'resolved' ? 'Đã xử lý' : 'Xác nhận'}
                                 </button>
                               </td>
                             )}
@@ -1040,6 +1137,11 @@ useEffect(() => {
                     </tbody>
                   </table>
                 </div>
+                {alertHistory.length > 5 && (
+                  <p className="text-sm text-gray-500 mt-2 text-center">
+                    Kéo xuống để xem thêm cảnh báo ({alertHistory.length} tổng cộng)
+                  </p>
+                )}
               </div>
             )}
 
